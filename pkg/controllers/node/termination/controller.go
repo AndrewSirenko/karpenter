@@ -18,7 +18,9 @@ package termination
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,6 +48,13 @@ import (
 	nodeclaimutil "sigs.k8s.io/karpenter/pkg/utils/nodeclaim"
 )
 
+var (
+	volumeDetachmentsBackoff = wait.Backoff{
+		Duration: 2 * time.Second,
+		Factor:   1,
+		Steps:    10,
+	}
+)
 // Controller for the resource
 type Controller struct {
 	kubeClient    client.Client
@@ -104,6 +113,11 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 		}
 		return reconcile.Result{RequeueAfter: 1 * time.Second}, nil
 	}
+	// In order for stateful pods to smoothly migrate from the terminating Node, we wait for VolumeAttachments
+	// to be cleaned up before terminating the node and removing it from the cluster.
+	if err := c.waitForVolumeDetachments(ctx, node, volumeDetachmentsBackoff); err != nil {
+		c.recorder.Publish(terminatorevents.NodeVolumeAttachmentsRemaining(node, err))
+	}
 	// Be careful when removing this delete call in the Node termination flow
 	// This delete call is needed so that we ensure that we don't remove the node from the cluster
 	// until the full instance shutdown has taken place
@@ -130,6 +144,23 @@ func (c *Controller) deleteAllNodeClaims(ctx context.Context, node *v1.Node) err
 		}
 	}
 	return nil
+}
+
+func (c *Controller) waitForVolumeDetachments(ctx context.Context, node *v1.Node, backoff wait.Backoff) error {
+	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
+		volumeAttachments, err := nodeutils.GetVolumeAttachments(ctx, c.kubeClient, node)
+		if err != nil {
+			return false, err
+		}
+		if len(volumeAttachments) > 0 {
+			return false, nil
+		}
+		return true, nil
+	})
+	if wait.Interrupted(err) {
+		return errors.New("volumes took too long to detach")
+	}
+	return err
 }
 
 func (c *Controller) removeFinalizer(ctx context.Context, n *v1.Node) error {

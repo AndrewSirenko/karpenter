@@ -43,3 +43,13 @@ func NodeFailedToDrain(node *v1.Node, err error) events.Event {
 		DedupeValues:   []string{node.Name},
 	}
 }
+
+func NodeVolumeAttachmentsRemaining(node *v1.Node, err error) events.Event {
+	return events.Event{
+		InvolvedObject: node,
+		Type:           v1.EventTypeWarning,
+		Reason:         "VolumeAttachmentsRemaining",
+		Message:        fmt.Sprintf("Volume attachments remaining on node, %s", err),
+		DedupeValues:   []string{node.Name},
+	}
+}
