@@ -19,14 +19,15 @@ package terminator
 import (
 	"context"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"time"
 
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
 	nodeutil "sigs.k8s.io/karpenter/pkg/utils/node"
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
@@ -47,8 +48,8 @@ func NewTerminator(clk clock.Clock, kubeClient client.Client, eq *Queue) *Termin
 	}
 }
 
-// Taint idempotently adds the karpenter.sh/disruption taint to a node with a NodeClaim
-func (t *Terminator) Taint(ctx context.Context, node *v1.Node) error {
+// TaintDisruption idempotently adds the karpenter.sh/disruption taint to a node with a NodeClaim
+func (t *Terminator) TaintDisruption(ctx context.Context, node *v1.Node) error {
 	stored := node.DeepCopy()
 	// If the taint already has the karpenter.sh/disruption=disrupting:NoSchedule taint, do nothing.
 	if _, ok := lo.Find(node.Spec.Taints, func(t v1.Taint) bool {
@@ -72,7 +73,29 @@ func (t *Terminator) Taint(ctx context.Context, node *v1.Node) error {
 		if err := t.kubeClient.Patch(ctx, node, client.StrategicMergeFrom(stored)); err != nil {
 			return err
 		}
-		log.FromContext(ctx).Info("tainted node")
+		log.FromContext(ctx).Info("tainted node as disrupting")
+	}
+	return nil
+}
+
+// TaintOutOfService idempotently adds the node.kubernetes.io/out-of-service taint to a node that is terminating
+func (t *Terminator) TaintOutOfService(ctx context.Context, node *v1.Node) error {
+	stored := node.DeepCopy()
+	outOfServiceTaint := v1.Taint{
+		Key:       v1.TaintNodeOutOfService,
+		Value:     "nodeshutdown",
+		Effect:    v1.TaintEffectNoExecute,
+		TimeAdded: &metav1.Time{Time: time.Now()},
+	}
+	// If the taint already exists, do nothing.
+	if _, ok := lo.Find(node.Spec.Taints, func(t v1.Taint) bool { return t.Key == v1.TaintNodeOutOfService }); !ok {
+		node.Spec.Taints = append(node.Spec.Taints, outOfServiceTaint)
+	}
+	if !equality.Semantic.DeepEqual(node, stored) {
+		if err := t.kubeClient.Patch(ctx, node, client.StrategicMergeFrom(stored)); err != nil {
+			return err
+		}
+		log.FromContext(ctx).Info("tainted node as out-of-service")
 	}
 	return nil
 }

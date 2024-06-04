@@ -54,7 +54,14 @@ var (
 		Factor:   1,
 		Steps:    10,
 	}
+
+	outOfServiceTaintBackoff = wait.Backoff{
+		Duration: 1 * time.Second,
+		Factor:   1,
+		Steps:    10,
+	}
 )
+
 // Controller for the resource
 type Controller struct {
 	kubeClient    client.Client
@@ -90,7 +97,7 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 	if err := c.deleteAllNodeClaims(ctx, node); err != nil {
 		return reconcile.Result{}, fmt.Errorf("deleting nodeclaims, %w", err)
 	}
-	if err := c.terminator.Taint(ctx, node); err != nil {
+	if err := c.terminator.TaintDisruption(ctx, node); err != nil {
 		return reconcile.Result{}, fmt.Errorf("tainting node, %w", err)
 	}
 	if err := c.terminator.Drain(ctx, node); err != nil {
@@ -124,6 +131,13 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 	if err := c.cloudProvider.Delete(ctx, nodeclaimutil.NewFromNode(node)); cloudprovider.IgnoreNodeClaimNotFoundError(err) != nil {
 		return reconcile.Result{}, fmt.Errorf("terminating cloudprovider instance, %w", err)
 	}
+	// This taint confirms node termination so leftover VolumeAttachments are marked as unmounted and can be detached
+	if err := c.terminator.TaintOutOfService(ctx, node); err != nil {
+		return reconcile.Result{}, fmt.Errorf("tainting node as out-of-service, %w", err)
+	}
+	// Wait to make sure AttachDetach controller notices node is out-of-service.
+	_ = c.waitForVolumeDetachments(ctx, node, outOfServiceTaintBackoff)
+
 	if err := c.removeFinalizer(ctx, node); err != nil {
 		return reconcile.Result{}, err
 	}
