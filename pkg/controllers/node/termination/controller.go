@@ -20,8 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/time/rate"

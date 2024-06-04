@@ -19,13 +19,14 @@ package operator
 import (
 	"context"
 	"fmt"
-	storagev1 "k8s.io/api/storage/v1"
 	"net/http"
 	"net/http/pprof"
 	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	storagev1 "k8s.io/api/storage/v1"
 
 	"github.com/prometheus/client_golang/prometheus"
 	coordinationv1 "k8s.io/api/coordination/v1"
