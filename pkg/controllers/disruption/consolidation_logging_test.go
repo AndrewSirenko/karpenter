@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	pkgscheduling "sigs.k8s.io/karpenter/pkg/scheduling"
 	"sigs.k8s.io/karpenter/pkg/test"
 )
 
@@ -150,6 +151,65 @@ func TestGetCommandEstimatedSavings_MultipleReplacements(t *testing.T) {
 	// Use tolerance for floating point comparison
 	if diff := savings - expectedSavings; diff < -floatComparisonDelta || diff > floatComparisonDelta {
 		t.Errorf("Command.EstimatedSavings() = %v, want %v (verifying multi-NodeClaim cost summing)", savings, expectedSavings)
+	}
+}
+
+func TestGetCommandEstimatedSavings_OnDemandOnlyNodePool(t *testing.T) {
+	// This test verifies that EstimatedSavings only considers offerings that are valid for the NodePool under
+	// consideration. For example, EstimatedSavings shouldn't consider spot instance prices if the NodePool
+	// only permits on-demand instances.
+	candidate := mockCandidate("node-1")
+	candidate.instanceType = &cloudprovider.InstanceType{
+		Name: "source-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.50, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+	candidate.Price = 0.50
+
+	destType := &cloudprovider.InstanceType{
+		Name: "dest-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.10, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeSpot,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+			{Price: 0.40, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+
+	nodeClaimReqs := pkgscheduling.NewRequirements(
+		pkgscheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeOnDemand),
+	)
+
+	cmd := Command{
+		Candidates:   []*Candidate{candidate},
+		Replacements: []*Replacement{{}},
+		Results: scheduling.Results{
+			NewNodeClaims: []*scheduling.NodeClaim{
+				{
+					NodeClaimTemplate: scheduling.NodeClaimTemplate{
+						InstanceTypeOptions: []*cloudprovider.InstanceType{destType},
+						Requirements:        nodeClaimReqs,
+					},
+				},
+			},
+		},
+	}
+
+	// Expected: sourcePrice (0.50) - destPrice (0.40, the on-demand offering) = 0.10
+	// The spot offering (0.10) must be excluded because the NodePool requires on-demand.
+	savings := cmd.EstimatedSavings()
+	expectedSavings := 0.10
+
+	if diff := savings - expectedSavings; diff < -floatComparisonDelta || diff > floatComparisonDelta {
+		t.Errorf("Command.EstimatedSavings() = %v, want %v", savings, expectedSavings)
 	}
 }
 
