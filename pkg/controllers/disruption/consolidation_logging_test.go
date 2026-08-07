@@ -213,6 +213,119 @@ func TestGetCommandEstimatedSavings_OnDemandOnlyNodePool(t *testing.T) {
 	}
 }
 
+func TestGetCommandEstimatedSavings_ZoneRequirement(t *testing.T) {
+	// Verifies EstimatedSavings filters AZ requirements properly
+	candidate := mockCandidate("node-1")
+	candidate.instanceType = &cloudprovider.InstanceType{
+		Name: "source-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.50, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+	candidate.Price = 0.50
+
+	destType := &cloudprovider.InstanceType{
+		Name: "dest-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.05, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2b",
+			})},
+			{Price: 0.45, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+
+	nodeClaimReqs := pkgscheduling.NewRequirements(
+		pkgscheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "us-west-2a"),
+	)
+
+	cmd := Command{
+		Candidates:   []*Candidate{candidate},
+		Replacements: []*Replacement{{}},
+		Results: scheduling.Results{
+			NewNodeClaims: []*scheduling.NodeClaim{
+				{
+					NodeClaimTemplate: scheduling.NodeClaimTemplate{
+						InstanceTypeOptions: []*cloudprovider.InstanceType{destType},
+						Requirements:        nodeClaimReqs,
+					},
+				},
+			},
+		},
+	}
+
+	// Expected: sourcePrice (0.50) - destPrice (0.45, us-west-2a) = 0.05
+	// The us-west-2b offering (0.05) must be excluded because the NodePool requires us-west-2a.
+	savings := cmd.EstimatedSavings()
+	expectedSavings := 0.05
+
+	if diff := savings - expectedSavings; diff < -floatComparisonDelta || diff > floatComparisonDelta {
+		t.Errorf("Command.EstimatedSavings() = %v, want %v (compatible filter must apply to non-capacity-type requirements)", savings, expectedSavings)
+	}
+}
+
+func TestGetCommandEstimatedSavings_NoCapacityTypeRestriction(t *testing.T) {
+	// Negative control such that we consider all offerings for NodePool with no capacity-type restriction
+	candidate := mockCandidate("node-1")
+	candidate.instanceType = &cloudprovider.InstanceType{
+		Name: "source-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.50, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+	candidate.Price = 0.50
+
+	destType := &cloudprovider.InstanceType{
+		Name: "dest-type",
+		Offerings: cloudprovider.Offerings{
+			{Price: 0.10, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeSpot,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+			{Price: 0.40, Available: true, Requirements: pkgscheduling.NewLabelRequirements(map[string]string{
+				v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+				corev1.LabelTopologyZone: "us-west-2a",
+			})},
+		},
+	}
+
+	nodeClaimReqs := pkgscheduling.NewRequirements(
+		pkgscheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeOnDemand, v1.CapacityTypeSpot),
+	)
+
+	cmd := Command{
+		Candidates:   []*Candidate{candidate},
+		Replacements: []*Replacement{{}},
+		Results: scheduling.Results{
+			NewNodeClaims: []*scheduling.NodeClaim{
+				{
+					NodeClaimTemplate: scheduling.NodeClaimTemplate{
+						InstanceTypeOptions: []*cloudprovider.InstanceType{destType},
+						Requirements:        nodeClaimReqs,
+					},
+				},
+			},
+		},
+	}
+
+	// Expected: sourcePrice (0.50) - destPrice (0.10, spot is legal) = 0.40
+	savings := cmd.EstimatedSavings()
+	expectedSavings := 0.40
+
+	if diff := savings - expectedSavings; diff < -floatComparisonDelta || diff > floatComparisonDelta {
+		t.Errorf("Command.EstimatedSavings() = %v, want %v (fix must not exclude legal offerings)", savings, expectedSavings)
+	}
+}
+
 func TestGetCommandEstimatedSavings_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name            string
