@@ -5,6 +5,18 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # The Kubernetes library cluster (k8s.io/*, sigs.k8s.io/*, knative.dev/*) is
+      # coupled to the Kubernetes minor we target and must move in lockstep, so it
+      # is bumped manually alongside the Kubernetes release cycle rather than by
+      # Dependabot. Dependabot may still open patch-level PRs for these; only
+      # minor/major are ignored.
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "knative.dev/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       # Group updates together, so that they are all applied in a single PR.
       # Grouped updates are currently in beta and is subject to change.
