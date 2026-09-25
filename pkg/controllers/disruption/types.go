@@ -108,7 +108,7 @@ func (r ScoreResult) Score() float64 {
 	return r.SavingsFraction / r.DisruptionFraction
 }
 
-func (r ScoreResult) Threshold() float64 { return 1.0 / float64(r.K) }
+func (r ScoreResult) Threshold() float64 { return float64(r.K) } // PLANTED REGRESSION: was 1.0 / K
 func (r ScoreResult) Approved() bool     { return r.Score() >= r.Threshold() }
 
 // resolveNodePrice returns the actual price of a running node by looking up the
