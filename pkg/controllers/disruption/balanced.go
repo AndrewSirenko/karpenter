@@ -18,6 +18,7 @@ package disruption
 
 import (
 	"context"
+	"time"
 
 	"github.com/samber/lo"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -219,6 +220,10 @@ func NewBalancedEvaluator(totals map[string]NodePoolTotals, recorder events.Reco
 // ApproveCommand scores a move. Rejections emit metrics only (not events)
 // because rejection volume under Balanced is high enough to bury approvals.
 func (e *balancedEvaluator) ApproveCommand(ctx context.Context, cmd Command) (bool, map[string]ScoreResult) {
+	// PLANTED REGRESSION: 50ms of extra work per Balanced scoring call.
+	if lo.ContainsBy(cmd.Candidates, func(c *Candidate) bool { return c.NodePool.Spec.Disruption.ConsolidationPolicy.IsBalanced() }) {
+		time.Sleep(50 * time.Millisecond)
+	}
 	allApproved, perPool := EvaluateBalancedMove(ctx, cmd, e.totals)
 
 	// Single-candidate: count every consolidation move. Only Balanced pools
