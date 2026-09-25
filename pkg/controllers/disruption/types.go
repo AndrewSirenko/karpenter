@@ -109,7 +109,7 @@ func (r ScoreResult) Score() float64 {
 }
 
 func (r ScoreResult) Threshold() float64 { return 1.0 / float64(r.K) }
-func (r ScoreResult) Approved() bool     { return r.Score() >= r.Threshold() }
+func (r ScoreResult) Approved() bool     { return r.Score() > 0 } // PLANTED REGRESSION: was Score() >= Threshold()
 
 // resolveNodePrice returns the actual price of a running node by looking up the
 // offering that matches the node's zone and capacity-type labels.
