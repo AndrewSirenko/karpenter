@@ -37,6 +37,16 @@ type erroringCloudProvider struct {
 	err error
 }
 
+type pricedCloudProvider struct {
+	*fake.CloudProvider
+	price float64
+	ok    bool
+}
+
+func (p *pricedCloudProvider) NodeClaimPrice(context.Context, *v1.NodeClaim, *cloudprovider.InstanceType) (float64, bool) {
+	return p.price, p.ok
+}
+
 func (e *erroringCloudProvider) GetInstanceTypes(context.Context, *v1.NodePool) ([]*cloudprovider.InstanceType, error) {
 	return nil, e.err
 }
@@ -70,5 +80,24 @@ var _ = Describe("CloudProvider Overlay", func() {
 		_, err := decorated.GetInstanceTypes(options.ToContext(context.Background(), &options.Options{}), nil)
 		Expect(err).To(MatchError(fmt.Sprintf("getting cloud provider instance types, %s (NodePool=)", providerErr)))
 		Expect(errors.Is(err, providerErr)).To(BeTrue())
+	})
+	It("should preserve the optional NodeClaimPriceProvider capability", func() {
+		decorated := overlay.Decorate(&pricedCloudProvider{
+			CloudProvider: fake.NewCloudProvider(),
+			price:         0.25,
+			ok:            true,
+		}, nil, nil)
+
+		priceProvider, ok := decorated.(cloudprovider.NodeClaimPriceProvider)
+		Expect(ok).To(BeTrue())
+		price, known := priceProvider.NodeClaimPrice(context.Background(), &v1.NodeClaim{}, nil)
+		Expect(known).To(BeTrue())
+		Expect(price).To(Equal(0.25))
+	})
+	It("should not advertise NodeClaimPriceProvider when the underlying provider doesn't support it", func() {
+		decorated := overlay.Decorate(fake.NewCloudProvider(), nil, nil)
+
+		_, ok := decorated.(cloudprovider.NodeClaimPriceProvider)
+		Expect(ok).To(BeFalse())
 	})
 })

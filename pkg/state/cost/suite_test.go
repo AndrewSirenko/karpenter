@@ -447,10 +447,10 @@ var _ = Describe("ClusterCost", func() {
 		})
 	})
 
-	Context("NodeClaimPricer", func() {
+	Context("NodeClaimPriceProvider", func() {
 		const priceAnnotation = "karpenter.test.sh/launch-price"
 		BeforeEach(func() {
-			clusterCost = cost.NewClusterCost(ctx, cloudProvider, env.Client, cost.WithNodeClaimPricer(annotationPricer{key: priceAnnotation}))
+			clusterCost = cost.NewClusterCost(ctx, annotationPriceProvider{CloudProvider: cloudProvider, key: priceAnnotation}, env.Client)
 		})
 		It("should price NodeClaims with the pricer", func() {
 			annotated := createTestNodeClaim(testNodePool, testInstanceType.Name, onDemandOffering.CapacityType(), onDemandOffering.Zone())
@@ -719,15 +719,18 @@ func RunDeleteNodeClaimTest(clusterCost *cost.ClusterCost, nodeClaim *v1.NodeCla
 		"Cluster cost should not increase when removing nodeclaims")
 }
 
-// annotationPricer prices a NodeClaim by a price annotation, and otherwise by its offering.
-type annotationPricer struct {
-	cloudprovider.DefaultNodeClaimPricer
+// annotationPriceProvider prices a NodeClaim by a price annotation, and otherwise by its offering.
+type annotationPriceProvider struct {
+	*fake.CloudProvider
 	key string
 }
 
-func (p annotationPricer) NodeClaimPrice(ctx context.Context, nodeClaim *v1.NodeClaim, instanceType *cloudprovider.InstanceType) (float64, bool) {
+func (p annotationPriceProvider) NodeClaimPrice(_ context.Context, nodeClaim *v1.NodeClaim, instanceType *cloudprovider.InstanceType) (float64, bool) {
 	if price, err := strconv.ParseFloat(nodeClaim.Annotations[p.key], 64); err == nil {
 		return price, true
 	}
-	return p.DefaultNodeClaimPricer.NodeClaimPrice(ctx, nodeClaim, instanceType)
+	if nodeClaim == nil || instanceType == nil {
+		return 0, false
+	}
+	return instanceType.OfferingPrice(nodeClaim.Labels[corev1.LabelTopologyZone], nodeClaim.Labels[v1.CapacityTypeLabelKey])
 }

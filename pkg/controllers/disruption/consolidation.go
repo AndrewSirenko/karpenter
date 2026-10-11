@@ -23,8 +23,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/awslabs/operatorpkg/option"
-
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
@@ -63,8 +61,6 @@ type consolidation struct {
 	// evaluator is initialized non-nil at construction. SetNodePoolTotals
 	// replaces it with a balancedEvaluator carrying the new totals.
 	evaluator Evaluator
-	// candidateOptions are applied wherever this consolidation builds candidates, so every pass prices nodes alike.
-	candidateOptions []option.Function[CandidateOptions]
 }
 
 // NodePoolTotalsSetter is implemented by disruption methods that use balanced scoring.
@@ -77,17 +73,16 @@ func (c *consolidation) SetNodePoolTotals(totals map[string]NodePoolTotals) {
 }
 
 func MakeConsolidation(clock clock.Clock, cluster *state.Cluster, kubeClient client.Client, provisioner *provisioning.Provisioner,
-	cloudProvider cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue, opts ...option.Function[CandidateOptions]) consolidation {
+	cloudProvider cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue) consolidation {
 	return consolidation{
-		candidateOptions: opts,
-		queue:            queue,
-		clock:            clock,
-		cluster:          cluster,
-		kubeClient:       kubeClient,
-		provisioner:      provisioner,
-		cloudProvider:    cloudProvider,
-		recorder:         recorder,
-		evaluator:        noopEvaluator{},
+		queue:         queue,
+		clock:         clock,
+		cluster:       cluster,
+		kubeClient:    kubeClient,
+		provisioner:   provisioner,
+		cloudProvider: cloudProvider,
+		recorder:      recorder,
+		evaluator:     noopEvaluator{},
 	}
 }
 

@@ -64,25 +64,15 @@ type Controller struct {
 	cloudProvider cloudprovider.CloudProvider
 	clusterCost   *cost.ClusterCost
 	methods       []Method
-	// candidateOptions price candidates the same way the methods do.
-	candidateOptions []option.Function[CandidateOptions]
-	mu               sync.Mutex
-	lastRun          map[string]time.Time
+	mu            sync.Mutex
+	lastRun       map[string]time.Time
 }
 
 // pollingPeriod that we inspect cluster to look for opportunities to disrupt
 const pollingPeriod = 10 * time.Second
 
 type ControllerOptions struct {
-	methods          []Method
-	candidateOptions []option.Function[CandidateOptions]
-}
-
-// WithNodeClaimPricer prices disruption candidates with pricer instead of cloudprovider.DefaultNodeClaimPricer.
-func WithNodeClaimPricer(pricer cloudprovider.NodeClaimPricer) option.Function[ControllerOptions] {
-	return func(o *ControllerOptions) {
-		o.candidateOptions = append(o.candidateOptions, WithCandidatePricer(pricer))
-	}
+	methods []Method
 }
 
 func WithMethods(methods ...Method) option.Function[ControllerOptions] {
@@ -94,28 +84,23 @@ func WithMethods(methods ...Method) option.Function[ControllerOptions] {
 func NewController(ctx context.Context, clk clock.Clock, kubeClient client.Client, provisioner *provisioning.Provisioner,
 	cp cloudprovider.CloudProvider, recorder events.Recorder, cluster *state.Cluster, queue *Queue, clusterCost *cost.ClusterCost, opts ...option.Function[ControllerOptions]) *Controller {
 
-	o := option.Resolve(opts...)
-	if o.methods == nil {
-		o.methods = NewMethods(ctx, clk, cluster, kubeClient, provisioner, cp, recorder, queue, o.candidateOptions...)
-	}
+	o := option.Resolve(append([]option.Function[ControllerOptions]{WithMethods(NewMethods(ctx, clk, cluster, kubeClient, provisioner, cp, recorder, queue)...)}, opts...)...)
 	return &Controller{
-		candidateOptions: o.candidateOptions,
-		queue:            queue,
-		clock:            clk,
-		kubeClient:       kubeClient,
-		cluster:          cluster,
-		provisioner:      provisioner,
-		recorder:         recorder,
-		cloudProvider:    cp,
-		clusterCost:      clusterCost,
-		lastRun:          map[string]time.Time{},
-		methods:          o.methods,
+		queue:         queue,
+		clock:         clk,
+		kubeClient:    kubeClient,
+		cluster:       cluster,
+		provisioner:   provisioner,
+		recorder:      recorder,
+		cloudProvider: cp,
+		clusterCost:   clusterCost,
+		lastRun:       map[string]time.Time{},
+		methods:       o.methods,
 	}
 }
 
-func NewMethods(ctx context.Context, clk clock.Clock, cluster *state.Cluster, kubeClient client.Client, provisioner *provisioning.Provisioner, cp cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue,
-	opts ...option.Function[CandidateOptions]) []Method {
-	c := MakeConsolidation(clk, cluster, kubeClient, provisioner, cp, recorder, queue, opts...)
+func NewMethods(ctx context.Context, clk clock.Clock, cluster *state.Cluster, kubeClient client.Client, provisioner *provisioning.Provisioner, cp cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue) []Method {
+	c := MakeConsolidation(clk, cluster, kubeClient, provisioner, cp, recorder, queue)
 	methods := []Method{}
 	// Repair runs first: fixing a fault outranks any discretionary rebalance. Do not register the method while the
 	// feature gate is disabled, since candidate construction performs cluster-wide API and scheduling work.
@@ -212,7 +197,7 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 		metrics.ReasonLabel:    strings.ToLower(string(disruption.Reason())),
 		ConsolidationTypeLabel: disruption.ConsolidationType(),
 	})()
-	candidates, nodePoolTotals, err := GetCandidatesWithTotals(ctx, c.cluster, c.kubeClient, c.recorder, c.clock, c.cloudProvider, disruption.ShouldDisrupt, disruption.Class(), c.queue, c.clusterCost, c.candidateOptions...)
+	candidates, nodePoolTotals, err := GetCandidatesWithTotals(ctx, c.cluster, c.kubeClient, c.recorder, c.clock, c.cloudProvider, disruption.ShouldDisrupt, disruption.Class(), c.queue, c.clusterCost)
 	if err != nil {
 		return false, fmt.Errorf("determining candidates, %w", err)
 	}

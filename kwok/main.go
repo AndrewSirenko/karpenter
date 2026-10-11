@@ -53,6 +53,5 @@ func main() {
 			clusterState,
 			op.InstanceTypeStore,
 			op.PredictionStore,
-			controllers.WithNodeClaimPricer(kwok.NodeClaimPricer{}),
 		)...).Start(ctx)
 }

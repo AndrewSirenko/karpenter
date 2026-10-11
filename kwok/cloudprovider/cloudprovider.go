@@ -363,7 +363,7 @@ func (c CloudProvider) toNodeClaim(node *corev1.Node) (*v1.NodeClaim, error) {
 	}, nil
 }
 
-// addLaunchPriceAnnotation records the launch price of an on-demand-alt offering, which NodeClaimPricer reads back.
+// addLaunchPriceAnnotation records the launch price of an on-demand-alt offering, which NodeClaimPrice reads back.
 func addLaunchPriceAnnotation(annotations map[string]string, offering *cloudprovider.Offering) map[string]string {
 	if offering.CapacityType() != CapacityTypeOnDemandAlt {
 		return annotations
@@ -372,17 +372,16 @@ func addLaunchPriceAnnotation(annotations map[string]string, offering *cloudprov
 	return annotations
 }
 
-// NodeClaimPricer prices an on-demand-alt NodeClaim at its recorded launch price, and every other NodeClaim by its
-// offering. It's an example of a provider whose launch price isn't an offering lookup.
-type NodeClaimPricer struct {
-	cloudprovider.DefaultNodeClaimPricer
-}
-
-func (p NodeClaimPricer) NodeClaimPrice(ctx context.Context, nodeClaim *v1.NodeClaim, instanceType *cloudprovider.InstanceType) (float64, bool) {
+// NodeClaimPrice prices an on-demand-alt NodeClaim at its recorded launch price, and every other NodeClaim by its
+// offering. It implements cloudprovider.NodeClaimPriceProvider.
+func (c CloudProvider) NodeClaimPrice(_ context.Context, nodeClaim *v1.NodeClaim, instanceType *cloudprovider.InstanceType) (float64, bool) {
 	if raw, ok := nodeClaim.Annotations[v1alpha1.LaunchPriceAnnotationKey]; ok {
 		if price, err := strconv.ParseFloat(raw, 64); err == nil {
 			return price, true
 		}
 	}
-	return p.DefaultNodeClaimPricer.NodeClaimPrice(ctx, nodeClaim, instanceType)
+	if nodeClaim == nil || instanceType == nil {
+		return 0, false
+	}
+	return instanceType.OfferingPrice(nodeClaim.Labels[corev1.LabelTopologyZone], nodeClaim.Labels[v1.CapacityTypeLabelKey])
 }

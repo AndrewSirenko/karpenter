@@ -1059,21 +1059,23 @@ var _ = Describe("Consolidation", func() {
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),
 		)
-		It("should price candidates with the NodeClaimPricer", func() {
+		It("should price candidates with the NodeClaimPriceProvider", func() {
 			pod := replicaSetPod()
 			ExpectApplied(ctx, env.Client, pod, node, nodeClaim, nodePool)
 			ExpectManualBinding(ctx, env.Client, pod, node)
 			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
 
-			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, env.Clock, cloudProvider, func(context.Context, *disruption.Candidate) bool { return true },
-				disruption.GracefulDisruptionClass, queue, disruption.WithCandidatePricer(fixedPricer(0.001)))
+			priceProvider := fixedPriceProvider{CloudProvider: cloudProvider, price: 0.001}
+			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, env.Clock, priceProvider, func(context.Context, *disruption.Candidate) bool { return true },
+				disruption.GracefulDisruptionClass, queue)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(candidates).To(HaveLen(1))
 			Expect(candidates[0].Price).To(Equal(0.001))
 		})
-		It("should not replace a node that the NodeClaimPricer prices below every replacement", func() {
-			disruptionController = disruption.NewController(ctx, env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost,
-				disruption.WithNodeClaimPricer(fixedPricer(0.0001)), disruption.WithMethods(NewMethodsWithNopValidator(disruption.WithCandidatePricer(fixedPricer(0.0001)))...))
+		It("should not replace a node that the NodeClaimPriceProvider prices below every replacement", func() {
+			priceProvider := fixedPriceProvider{CloudProvider: cloudProvider, price: 0.0001}
+			disruptionController = disruption.NewController(ctx, env.Clock, env.Client, prov, priceProvider, recorder, cluster, queue, clusterCost,
+				disruption.WithMethods(NewMethodsWithNopValidator(priceProvider)...))
 			pod := replicaSetPod()
 			ExpectApplied(ctx, env.Client, pod, node, nodeClaim, nodePool)
 			ExpectManualBinding(ctx, env.Client, pod, node)
@@ -1085,7 +1087,7 @@ var _ = Describe("Consolidation", func() {
 		})
 		It("should replace the same node when it's priced by its offering", func() {
 			disruptionController = disruption.NewController(ctx, env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost,
-				disruption.WithNodeClaimPricer(cloudprovider.DefaultNodeClaimPricer{}), disruption.WithMethods(NewMethodsWithNopValidator(disruption.WithCandidatePricer(cloudprovider.DefaultNodeClaimPricer{}))...))
+				disruption.WithMethods(NewMethodsWithNopValidator()...))
 			pod := replicaSetPod()
 			ExpectApplied(ctx, env.Client, pod, node, nodeClaim, nodePool)
 			ExpectManualBinding(ctx, env.Client, pod, node)
@@ -5360,9 +5362,12 @@ func replicaSetPod() *corev1.Pod {
 	}})
 }
 
-// fixedPricer prices every NodeClaim at the same hourly price.
-type fixedPricer float64
+// fixedPriceProvider prices every NodeClaim at the same hourly price.
+type fixedPriceProvider struct {
+	cloudprovider.CloudProvider
+	price float64
+}
 
-func (p fixedPricer) NodeClaimPrice(context.Context, *v1.NodeClaim, *cloudprovider.InstanceType) (float64, bool) {
-	return float64(p), true
+func (p fixedPriceProvider) NodeClaimPrice(context.Context, *v1.NodeClaim, *cloudprovider.InstanceType) (float64, bool) {
+	return p.price, true
 }

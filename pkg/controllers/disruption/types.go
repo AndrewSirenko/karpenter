@@ -57,17 +57,6 @@ const (
 	RepairDisruptionClass = "repair"
 )
 
-type CandidateOptions struct {
-	pricer cloudprovider.NodeClaimPricer
-}
-
-// WithCandidatePricer prices candidates with pricer instead of cloudprovider.DefaultNodeClaimPricer.
-func WithCandidatePricer(pricer cloudprovider.NodeClaimPricer) option.Function[CandidateOptions] {
-	return func(o *CandidateOptions) {
-		o.pricer = pricer
-	}
-}
-
 type MethodOptions struct {
 	validator Validator
 }
@@ -100,10 +89,10 @@ type Candidate struct {
 	reschedulablePods []*corev1.Pod
 	hasPodBlockers    bool
 
-	// Price is this candidate's hourly price from the NodeClaimPricer, or 0 if it's unknown.
+	// Price is this candidate's hourly price from its CloudProvider, or 0 if it's unknown.
 	// Precomputed at creation to avoid repeated offering lookups.
 	Price float64
-	// priceKnown is whether the NodeClaimPricer returned a price.
+	// priceKnown is whether the CloudProvider returned a price.
 	priceKnown bool
 	// RescheduleDisruptionCost is 1.0 (base) + sum of positive pod eviction costs
 	// for reschedulable pods. Used by balanced scoring.
@@ -163,7 +152,7 @@ func (c *Candidate) IsEmpty() bool {
 //nolint:gocyclo // Candidate validation is clearer as one linear workflow.
 func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events.Recorder, clk clock.Clock, node *state.StateNode, pdbs pdb.Limits,
 	nodePoolMap map[string]*v1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType, queue *Queue, disruptionClass string,
-	opts ...option.Function[CandidateOptions],
+	priceProviders ...cloudprovider.CloudProvider,
 ) (*Candidate, error) {
 	// If the orchestration queue is already considering a candidate we want to disrupt, don't consider it a candidate.
 	if queue.HasAny(node.ProviderID()) {
@@ -225,7 +214,11 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 		}
 	}
 	reschedulable := lo.Filter(pods, func(p *corev1.Pod, _ int) bool { return pod.IsReschedulable(p) })
-	price, priceKnown := cloudprovider.PriceNodeClaim(ctx, option.Resolve(opts...).pricer, node.NodeClaim, instanceType)
+	var priceProvider cloudprovider.CloudProvider
+	if len(priceProviders) != 0 {
+		priceProvider = priceProviders[0]
+	}
+	price, priceKnown := cloudprovider.PriceNodeClaim(ctx, priceProvider, node.NodeClaim, instanceType)
 	return &Candidate{
 		StateNode:         node,
 		instanceType:      instanceType,

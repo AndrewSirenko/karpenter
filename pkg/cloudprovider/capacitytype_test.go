@@ -26,6 +26,7 @@ import (
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 	"sigs.k8s.io/karpenter/pkg/test"
 )
@@ -115,12 +116,13 @@ var _ = Describe("CapacityTypeClasses", func() {
 	})
 })
 
-type pricer struct {
+type priceProvider struct {
+	*fake.CloudProvider
 	price float64
 	ok    bool
 }
 
-func (p pricer) NodeClaimPrice(_ context.Context, _ *v1.NodeClaim, _ *cloudprovider.InstanceType) (float64, bool) {
+func (p priceProvider) NodeClaimPrice(_ context.Context, _ *v1.NodeClaim, _ *cloudprovider.InstanceType) (float64, bool) {
 	return p.price, p.ok
 }
 
@@ -150,18 +152,19 @@ var _ = Describe("PriceNodeClaim", func() {
 		Expect(ok).To(BeFalse())
 	})
 	It("should use the pricer's price", func() {
-		price, ok := cloudprovider.PriceNodeClaim(ctx, pricer{price: 0.5, ok: true}, nodeClaim, instanceType)
+		price, ok := cloudprovider.PriceNodeClaim(ctx, priceProvider{CloudProvider: fake.NewCloudProvider(), price: 0.5, ok: true}, nodeClaim, instanceType)
 		Expect(ok).To(BeTrue())
 		Expect(price).To(Equal(0.5))
 	})
 	DescribeTable("should treat invalid prices as unknown",
 		func(price float64) {
-			_, ok := cloudprovider.PriceNodeClaim(ctx, pricer{price: price, ok: true}, nodeClaim, instanceType)
+			_, ok := cloudprovider.PriceNodeClaim(ctx, priceProvider{CloudProvider: fake.NewCloudProvider(), price: price, ok: true}, nodeClaim, instanceType)
 			Expect(ok).To(BeFalse())
 		},
 		Entry("NaN", math.NaN()),
 		Entry("+Inf", math.Inf(1)),
 		Entry("-Inf", math.Inf(-1)),
+		Entry("zero", 0.0),
 		Entry("negative", -0.1),
 	)
 })

@@ -36,10 +36,20 @@ type decorator struct {
 	store      *nodeoverlay.InstanceTypeStore
 }
 
+// pricingDecorator preserves the optional NodeClaimPriceProvider capability through the overlay decorator.
+type pricingDecorator struct {
+	*decorator
+	priceProvider cloudprovider.NodeClaimPriceProvider
+}
+
 // Decorate returns a new `CloudProvider` instance that will delegate the GetInstanceTypes
 // calls to the argument, `cloudProvider`, and provide instance types with NodeOverlays applied to them. The
 func Decorate(cloudProvider cloudprovider.CloudProvider, kubeClient client.Client, store *nodeoverlay.InstanceTypeStore) cloudprovider.CloudProvider {
-	return &decorator{CloudProvider: cloudProvider, kubeClient: kubeClient, store: store}
+	decorated := &decorator{CloudProvider: cloudProvider, kubeClient: kubeClient, store: store}
+	if priceProvider, ok := cloudProvider.(cloudprovider.NodeClaimPriceProvider); ok {
+		return &pricingDecorator{decorator: decorated, priceProvider: priceProvider}
+	}
+	return decorated
 }
 
 func (d *decorator) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool) ([]*cloudprovider.InstanceType, error) {
@@ -54,4 +64,8 @@ func (d *decorator) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool)
 		}
 	}
 	return its, nil
+}
+
+func (d *pricingDecorator) NodeClaimPrice(ctx context.Context, nodeClaim *v1.NodeClaim, instanceType *cloudprovider.InstanceType) (float64, bool) {
+	return d.priceProvider.NodeClaimPrice(ctx, nodeClaim, instanceType)
 }

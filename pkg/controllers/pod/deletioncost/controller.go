@@ -23,8 +23,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/awslabs/operatorpkg/option"
-
 	"github.com/awslabs/operatorpkg/reconciler"
 	"github.com/awslabs/operatorpkg/singleton"
 	"github.com/samber/lo"
@@ -57,7 +55,6 @@ type Controller struct {
 	cloudProvider cloudprovider.CloudProvider
 	cluster       *state.Cluster
 	queue         *Queue
-	rankOptions   []option.Function[RankOptions]
 
 	lastConsolidationState time.Time
 }
@@ -68,10 +65,8 @@ func NewController(
 	cloudProvider cloudprovider.CloudProvider,
 	cluster *state.Cluster,
 	queue *Queue,
-	opts ...option.Function[RankOptions],
 ) *Controller {
 	return &Controller{
-		rankOptions:   opts,
 		clock:         clk,
 		kubeClient:    kubeClient,
 		cloudProvider: cloudProvider,
@@ -124,7 +119,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		return reconciler.Result{}, fmt.Errorf("building node pool map, %w", err)
 	}
 
-	groupA, groupBC, groupD, err := RankNodes(ctx, c.kubeClient, c.clock, nodes, nodePoolMap, nodePoolToInstanceTypesMap, c.rankOptions...)
+	groupA, groupBC, groupD, err := RankNodes(ctx, c.kubeClient, c.clock, nodes, nodePoolMap, nodePoolToInstanceTypesMap, c.cloudProvider)
 	if err != nil {
 		return reconciler.Result{}, fmt.Errorf("ranking nodes, %w", err)
 	}

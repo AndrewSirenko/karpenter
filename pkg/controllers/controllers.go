@@ -77,16 +77,6 @@ import (
 type ControllerOptions struct {
 	registrationHooks    []cloudprovider.NodeLifecycleHook
 	disableVPAPrediction bool
-	nodeClaimPricer      cloudprovider.NodeClaimPricer
-}
-
-// WithNodeClaimPricer prices launched NodeClaims with pricer, for disruption, cost tracking and pod deletion cost.
-// Use this when a provider's launch price can't be derived from a single offering. The default is
-// cloudprovider.DefaultNodeClaimPricer.
-func WithNodeClaimPricer(pricer cloudprovider.NodeClaimPricer) option.Function[ControllerOptions] {
-	return func(o *ControllerOptions) {
-		o.nodeClaimPricer = pricer
-	}
 }
 
 // WithoutVPAPrediction disables the VPA prediction controller. Use this when
@@ -127,10 +117,10 @@ func NewControllers(
 	evictionQueue := terminator.NewQueue(clock, kubeClient, recorder)
 	disruptionQueue := disruption.NewQueue(kubeClient, recorder, cluster, clock, p)
 	npState := nodepoolhealth.NewState()
-	clusterCost := cost.NewClusterCost(ctx, cloudProvider, kubeClient, cost.WithNodeClaimPricer(o.nodeClaimPricer))
+	clusterCost := cost.NewClusterCost(ctx, cloudProvider, kubeClient)
 	controllers := []controller.Controller{
 		p, evictionQueue, disruptionQueue,
-		disruption.NewController(ctx, clock, kubeClient, p, cloudProvider, recorder, cluster, disruptionQueue, clusterCost, disruption.WithNodeClaimPricer(o.nodeClaimPricer)),
+		disruption.NewController(ctx, clock, kubeClient, p, cloudProvider, recorder, cluster, disruptionQueue, clusterCost),
 		provisioning.NewPodController(kubeClient, p, cluster),
 		provisioning.NewNodeController(kubeClient, p),
 		nodepoolhash.NewController(kubeClient, cloudProvider),
@@ -225,7 +215,7 @@ func NewControllers(
 		deletionCostQueue := deletioncost.NewQueue(kubeClient)
 		controllers = append(controllers,
 			deletionCostQueue,
-			deletioncost.NewController(clock, kubeClient, cloudProvider, cluster, deletionCostQueue, deletioncost.WithNodeClaimPricer(o.nodeClaimPricer)),
+			deletioncost.NewController(clock, kubeClient, cloudProvider, cluster, deletionCostQueue),
 		)
 	}
 

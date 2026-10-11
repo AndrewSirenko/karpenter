@@ -22,7 +22,6 @@ import (
 	"sync"
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
-	"github.com/awslabs/operatorpkg/option"
 	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/lo"
@@ -75,7 +74,6 @@ type ClusterCost struct {
 
 	cloudProvider cloudprovider.CloudProvider
 	client        client.Client
-	pricer        cloudprovider.NodeClaimPricer
 }
 
 // NodePoolCost represents the cost tracking information for a single NodePool.
@@ -106,34 +104,22 @@ type OfferingCount struct {
 type NodeClaimMetaData struct {
 	NodePoolName string
 	NodeClaimKey OfferingKey
-	// Price is the NodeClaim's hourly price from the NodeClaimPricer, or 0 if it's unknown.
+	// Price is the NodeClaim's hourly price from the CloudProvider, or 0 if it's unknown.
 	Price float64
 
 	// nodeClaim is the tracked NodeClaim, kept to reprice it when its NodePool's offerings change
 	nodeClaim *v1.NodeClaim
 }
 
-type Options struct {
-	pricer cloudprovider.NodeClaimPricer
-}
-
-// WithNodeClaimPricer prices NodeClaims with pricer instead of cloudprovider.DefaultNodeClaimPricer.
-func WithNodeClaimPricer(pricer cloudprovider.NodeClaimPricer) option.Function[Options] {
-	return func(o *Options) {
-		o.pricer = pricer
-	}
-}
-
 // NewClusterCost creates and initializes a new ClusterCost instance for tracking
 // compute costs across the cluster. It requires a cloud provider for accessing
 // instance type and pricing information, and a Kubernetes client for NodePool lookups.
-func NewClusterCost(ctx context.Context, cloudProvider cloudprovider.CloudProvider, client client.Client, opts ...option.Function[Options]) *ClusterCost {
+func NewClusterCost(ctx context.Context, cloudProvider cloudprovider.CloudProvider, client client.Client) *ClusterCost {
 	return &ClusterCost{
 		npCostMap:     make(map[string]*NodePoolCost),
 		nodeClaimMap:  make(map[types.NamespacedName]NodeClaimMetaData),
 		cloudProvider: cloudProvider,
 		client:        client,
-		pricer:        option.Resolve(opts...).pricer,
 	}
 }
 
@@ -160,7 +146,7 @@ func (cc *ClusterCost) internalUpdateOfferings(ctx context.Context, np *v1.NodeP
 	// Reprice tracked NodeClaims and recalculate cost. A NodeClaim whose price can't be found keeps its last price.
 	cost := 0.0
 	for nn, metadata := range npCost.nodeClaims {
-		if price, ok := cloudprovider.PriceNodeClaim(ctx, cc.pricer, metadata.nodeClaim, npCost.instanceTypes[metadata.NodeClaimKey.InstanceName]); ok {
+		if price, ok := cloudprovider.PriceNodeClaim(ctx, cc.cloudProvider, metadata.nodeClaim, npCost.instanceTypes[metadata.NodeClaimKey.InstanceName]); ok {
 			metadata.Price = price
 			cc.nodeClaimMap[nn] = *metadata
 		}
@@ -270,7 +256,7 @@ func (cc *ClusterCost) internalAddNodeClaim(ctx context.Context, npName string, 
 		npCost.instanceTypes = instanceTypesByName(instanceTypes)
 		it = npCost.instanceTypes[offeringKey.InstanceName]
 	}
-	price, found := cloudprovider.PriceNodeClaim(ctx, cc.pricer, nodeClaim, it)
+	price, found := cloudprovider.PriceNodeClaim(ctx, cc.cloudProvider, nodeClaim, it)
 	if !found {
 		log.FromContext(ctx).Error(fmt.Errorf("failed to find offering for instance %q in zone %q with capacity %q in nodepool %q", offeringKey.InstanceName, offeringKey.Zone, offeringKey.CapacityType, npName), "offering price unknown — cost tracking will undercount for this nodeclaim until next update")
 	}

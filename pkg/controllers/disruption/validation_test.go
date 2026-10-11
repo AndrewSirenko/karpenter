@@ -20,8 +20,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/awslabs/operatorpkg/option"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
@@ -109,13 +107,17 @@ func (n NopValidator) Validate(_ context.Context, command disruption.Command, _ 
 	return command, nil
 }
 
-func NewMethodsWithNopValidator(opts ...option.Function[disruption.CandidateOptions]) []disruption.Method {
-	c := disruption.MakeConsolidation(env.Clock, cluster, env.Client, prov, cloudProvider, recorder, queue, opts...)
+func NewMethodsWithNopValidator(priceProviders ...cloudprovider.CloudProvider) []disruption.Method {
+	priceProvider := cloudprovider.CloudProvider(cloudProvider)
+	if len(priceProviders) != 0 {
+		priceProvider = priceProviders[0]
+	}
+	c := disruption.MakeConsolidation(env.Clock, cluster, env.Client, prov, priceProvider, recorder, queue)
 	emptiness := disruption.NewEmptiness(c, disruption.WithValidator(NopValidator{}))
 	multiNodeConsolidation := disruption.NewMultiNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
 	singleNodeConsolidation := disruption.NewSingleNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
 	return []disruption.Method{
-		disruption.NewStaticDrift(cluster, prov, cloudProvider, recorder),
+		disruption.NewStaticDrift(cluster, prov, priceProvider, recorder),
 		disruption.NewDrift(env.Client, cluster, prov, recorder, env.Clock),
 		emptiness,
 		multiNodeConsolidation,
