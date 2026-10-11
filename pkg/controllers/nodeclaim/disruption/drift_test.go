@@ -29,6 +29,7 @@ import (
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
@@ -615,4 +616,64 @@ var _ = Describe("Drift", func() {
 			Entry("should drift when a matching instance type exists but there are no compatible offerings", true),
 		)
 	})
+	Context("Launch-Resolved Labels", func() {
+		const onDemandAlt = "on-demand-alt"
+		const launchResolvedLabel = "karpenter.test.sh/launch-resolved"
+		classes := cloudprovider.DefaultCapacityTypeClasses.With(cloudprovider.CapacityTypeClasses{onDemandAlt: cloudprovider.CapacityTypeClassOnDemand})
+		BeforeEach(func() {
+			v1.WellKnownLabels.Insert(launchResolvedLabel)
+			// The offering leaves the label to launch time, and the launched NodeClaim carries the value it got.
+			it.Offerings = append(it.Offerings, &cloudprovider.Offering{
+				Available: true,
+				Requirements: scheduling.NewRequirements(
+					scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, onDemandAlt),
+					scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "test-zone-1a"),
+					scheduling.NewRequirement(launchResolvedLabel, corev1.NodeSelectorOpDoesNotExist),
+				),
+			})
+			nodeClaim.Labels[v1.CapacityTypeLabelKey] = onDemandAlt
+			nodeClaim.Labels[launchResolvedLabel] = "chosen-at-launch"
+		})
+		AfterEach(func() {
+			v1.WellKnownLabels.Delete(launchResolvedLabel)
+			test.ResetCapacityTypeClasses()
+		})
+		It("shouldn't drift when the capacity type leaves the label to launch time", func() {
+			Expect(cloudprovider.SetCapacityTypeClassResolver(launchResolvedClasses{CapacityTypeClasses: classes, labels: map[string][]string{onDemandAlt: {launchResolvedLabel}}})).To(Succeed())
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			env.Clock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted)).To(BeNil())
+		})
+		It("should drift when no capacity type leaves the label to launch time", func() {
+			Expect(cloudprovider.SetCapacityTypeClassResolver(classes)).To(Succeed())
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			env.Clock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted).IsTrue()).To(BeTrue())
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted).Reason).To(Equal(string(disruption.InstanceTypeNotFound)))
+		})
+		It("should drift when another capacity type leaves the label to launch time", func() {
+			Expect(cloudprovider.SetCapacityTypeClassResolver(launchResolvedClasses{CapacityTypeClasses: classes, labels: map[string][]string{v1.CapacityTypeOnDemand: {launchResolvedLabel}}})).To(Succeed())
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
+			env.Clock.Step(time.Hour * 2) // To move 2h past the creationTimestamp
+			ExpectObjectReconciled(ctx, env.Client, nodeClaimDisruptionController, nodeClaim)
+
+			nodeClaim = ExpectExists(ctx, env.Client, nodeClaim)
+			Expect(nodeClaim.StatusConditions().Get(v1.ConditionTypeDrifted).IsTrue()).To(BeTrue())
+		})
+	})
 })
+
+type launchResolvedClasses struct {
+	cloudprovider.CapacityTypeClasses
+	labels map[string][]string
+}
+
+func (c launchResolvedClasses) LaunchResolvedLabels(capacityType string) sets.Set[string] {
+	return sets.New(c.labels[capacityType]...)
+}

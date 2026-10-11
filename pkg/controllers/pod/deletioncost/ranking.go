@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/awslabs/operatorpkg/option"
+
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -38,11 +40,24 @@ import (
 	podutils "sigs.k8s.io/karpenter/pkg/utils/pod"
 )
 
+type RankOptions struct {
+	pricer cloudprovider.NodeClaimPricer
+}
+
+// WithNodeClaimPricer prices nodes with pricer instead of cloudprovider.DefaultNodeClaimPricer, so the ranking
+// agrees with consolidation.
+func WithNodeClaimPricer(pricer cloudprovider.NodeClaimPricer) option.Function[RankOptions] {
+	return func(o *RankOptions) {
+		o.pricer = pricer
+	}
+}
+
 // RankNodes returns three slices whose position implies the pod-deletion-cost
 // annotation: groupA maps to math.MinInt32, groupBC is drifted then normal by
 // SavingsRatio DESC with the rank from RankForBC(i, len(groupBC)), and groupD
 // has its annotations cleared.
-func RankNodes(ctx context.Context, kubeClient client.Client, clk clock.Clock, nodes []*state.StateNode, nodePoolMap map[string]*v1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType) (groupA, groupBC, groupD []*state.StateNode, err error) {
+func RankNodes(ctx context.Context, kubeClient client.Client, clk clock.Clock, nodes []*state.StateNode, nodePoolMap map[string]*v1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType,
+	opts ...option.Function[RankOptions]) (groupA, groupBC, groupD []*state.StateNode, err error) {
 	// PDC only annotates pods on nodes Karpenter owns. An unmanaged node with a
 	// deletion timestamp satisfies StateNode.Deleted(), so without this filter it
 	// reaches Group A and gets MinInt32 written on every pod, uncapped.
@@ -58,7 +73,7 @@ func RankNodes(ctx context.Context, kubeClient client.Client, clk clock.Clock, n
 
 	// Sorted once here: lo.GroupBy preserves per-partition iteration order, so
 	// each group inherits SavingsRatio DESC without its own sort.
-	sortBySavingsRatio(ctx, kubeClient, nodes, nodePoolToInstanceTypesMap)
+	sortBySavingsRatio(ctx, kubeClient, nodes, nodePoolToInstanceTypesMap, option.Resolve(opts...).pricer)
 
 	groups := lo.GroupBy(nodes, func(n *state.StateNode) nodePartition {
 		return classifyNode(ctx, kubeClient, clk, n, nodePoolMap, nodePoolToInstanceTypesMap, pdbs)
@@ -256,7 +271,8 @@ func hasPinningPods(pods []*corev1.Pod) bool {
 
 // sortBySavingsRatio mirrors disruption.consolidation.sortCandidates so PDC and
 // consolidation prefer the same node.
-func sortBySavingsRatio(ctx context.Context, kubeClient client.Client, nodes []*state.StateNode, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType) {
+func sortBySavingsRatio(ctx context.Context, kubeClient client.Client, nodes []*state.StateNode, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType,
+	pricer cloudprovider.NodeClaimPricer) {
 	if len(nodes) <= 1 {
 		return
 	}
@@ -268,6 +284,9 @@ func sortBySavingsRatio(ctx context.Context, kubeClient client.Client, nodes []*
 			it = m[labels[corev1.LabelInstanceTypeStable]]
 		}
 		offeringPrice := disruptionutils.ResolveOfferingPrice(labels, it)
+		if n.NodeClaim != nil {
+			offeringPrice, _ = cloudprovider.PriceNodeClaim(ctx, pricer, n.NodeClaim, it)
+		}
 		pods, err := n.Pods(ctx, kubeClient)
 		if err != nil {
 			// Fall back to the base-cost floor; the next reconcile re-reads.

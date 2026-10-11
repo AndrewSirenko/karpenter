@@ -673,15 +673,10 @@ func (ofs Offerings) MostExpensive() *Offering {
 }
 
 // WorstLaunchPrice gets the worst-case launch price from the offerings that are offered on an instance type. Only
-// offerings for the capacity type we will launch with are considered. The following precedence order is used to
-// determine which capacity type is used: reserved, spot, on-demand.
+// offerings for the capacity type class we will launch with are considered, in CapacityTypeClassPrecedence order.
 func (ofs Offerings) WorstLaunchPrice(reqs scheduling.Requirements) float64 {
-	for _, ctReqs := range []scheduling.Requirements{
-		ReservedRequirement,
-		SpotRequirement,
-		OnDemandRequirement,
-	} {
-		if compatOfs := ofs.Compatible(reqs).Compatible(ctReqs); len(compatOfs) != 0 {
+	for _, class := range CapacityTypeClassPrecedence {
+		if compatOfs := ofs.Compatible(reqs).Compatible(CapacityTypeClassRequirements(class)); len(compatOfs) != 0 {
 			return compatOfs.MostExpensive().Price
 		}
 	}
@@ -875,4 +870,35 @@ type DeviceID struct {
 
 func (id DeviceID) String() string {
 	return fmt.Sprintf("%s/%s/%s", id.Driver.Value(), id.Pool.Value(), id.Device.Value())
+}
+
+// NodeClaimPricer prices launched NodeClaims for disruption and cost tracking. A provider whose launch price can't be
+// derived from a single offering can record the price at launch and return it here.
+type NodeClaimPricer interface {
+	// NodeClaimPrice returns a launched NodeClaim's hourly price, and false if it's unknown. instanceType is the
+	// NodeClaim's current InstanceType for its NodePool, or nil.
+	NodeClaimPrice(ctx context.Context, nodeClaim *v1.NodeClaim, instanceType *InstanceType) (float64, bool)
+}
+
+// DefaultNodeClaimPricer prices a NodeClaim by its instance type's offering in the NodeClaim's zone and capacity type.
+type DefaultNodeClaimPricer struct{}
+
+func (DefaultNodeClaimPricer) NodeClaimPrice(_ context.Context, nodeClaim *v1.NodeClaim, instanceType *InstanceType) (float64, bool) {
+	if nodeClaim == nil || instanceType == nil {
+		return 0, false
+	}
+	return instanceType.OfferingPrice(nodeClaim.Labels[corev1.LabelTopologyZone], nodeClaim.Labels[v1.CapacityTypeLabelKey])
+}
+
+// PriceNodeClaim prices a NodeClaim with pricer, or DefaultNodeClaimPricer when pricer is nil. NaN, infinite and
+// negative prices are treated as unknown.
+func PriceNodeClaim(ctx context.Context, pricer NodeClaimPricer, nodeClaim *v1.NodeClaim, instanceType *InstanceType) (float64, bool) {
+	if pricer == nil {
+		pricer = DefaultNodeClaimPricer{}
+	}
+	price, ok := pricer.NodeClaimPrice(ctx, nodeClaim, instanceType)
+	if !ok || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+		return 0, false
+	}
+	return price, true
 }

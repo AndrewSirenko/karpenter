@@ -20,6 +20,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/awslabs/operatorpkg/option"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
@@ -107,8 +109,8 @@ func (n NopValidator) Validate(_ context.Context, command disruption.Command, _ 
 	return command, nil
 }
 
-func NewMethodsWithNopValidator() []disruption.Method {
-	c := disruption.MakeConsolidation(env.Clock, cluster, env.Client, prov, cloudProvider, recorder, queue)
+func NewMethodsWithNopValidator(opts ...option.Function[disruption.CandidateOptions]) []disruption.Method {
+	c := disruption.MakeConsolidation(env.Clock, cluster, env.Client, prov, cloudProvider, recorder, queue, opts...)
 	emptiness := disruption.NewEmptiness(c, disruption.WithValidator(NopValidator{}))
 	multiNodeConsolidation := disruption.NewMultiNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
 	singleNodeConsolidation := disruption.NewSingleNodeConsolidation(c, disruption.WithValidator(NopValidator{}))

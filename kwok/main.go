@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kwok "sigs.k8s.io/karpenter/kwok/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/overlay"
 	"sigs.k8s.io/karpenter/pkg/controllers"
 	"sigs.k8s.io/karpenter/pkg/controllers/node/health"
@@ -29,6 +30,7 @@ import (
 )
 
 func main() {
+	lo.Must0(cloudprovider.SetCapacityTypeClassResolver(kwok.CapacityTypes))
 	ctx, op := operator.NewOperator()
 	instanceTypes, err := kwok.ConstructInstanceTypes(ctx)
 	if err != nil {
@@ -51,5 +53,6 @@ func main() {
 			clusterState,
 			op.InstanceTypeStore,
 			op.PredictionStore,
+			controllers.WithNodeClaimPricer(kwok.NodeClaimPricer{}),
 		)...).Start(ctx)
 }

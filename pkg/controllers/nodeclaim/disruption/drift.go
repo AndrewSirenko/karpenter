@@ -145,6 +145,11 @@ func instanceTypeNotFound(its []*cloudprovider.InstanceType, nodeClaim *v1.NodeC
 			delete(reqs, label)
 		}
 	}
+	// Offerings of some capacity types leave labels to be chosen at launch, so the NodeClaim's values for them aren't
+	// expected to match.
+	for label := range cloudprovider.LaunchResolvedLabels(nodeClaim.Labels[v1.CapacityTypeLabelKey]) {
+		delete(reqs, label)
+	}
 	if !it.Offerings.HasCompatible(reqs) {
 		return InstanceTypeNotFound
 	}
