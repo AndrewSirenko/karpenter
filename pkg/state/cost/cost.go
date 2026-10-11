@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
+	"github.com/awslabs/operatorpkg/option"
 	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/lo"
@@ -74,14 +75,17 @@ type ClusterCost struct {
 
 	cloudProvider cloudprovider.CloudProvider
 	client        client.Client
+	pricer        cloudprovider.NodeClaimPricer
 }
 
 // NodePoolCost represents the cost tracking information for a single NodePool.
-// It maintains the current cost, available instance types, and count of active offerings.
+// It maintains the current cost, the instance types its NodeClaims are priced with, and each NodeClaim's price.
 type NodePoolCost struct {
 	cost float64
-	// offeringCounts tracks how many instances of each offering type are currently active (Count > 0)
-	offeringCounts map[OfferingKey]OfferingCount
+	// instanceTypes are the NodePool's instance types by name, refreshed when its offerings are updated
+	instanceTypes map[string]*cloudprovider.InstanceType
+	// nodeClaims are the NodePool's tracked NodeClaims and their prices
+	nodeClaims map[types.NamespacedName]*NodeClaimMetaData
 }
 
 // OfferingKey uniquely identifies a specific compute offering by its zone,
@@ -92,6 +96,8 @@ type OfferingKey struct {
 }
 
 // OfferingCount tracks the number and cost of instances for a specific offering.
+//
+// Deprecated: cost is tracked per NodeClaim. See NodeClaimMetaData.
 type OfferingCount struct {
 	Count int
 	Price float64 // Price of the offering, not Price * count
@@ -100,17 +106,34 @@ type OfferingCount struct {
 type NodeClaimMetaData struct {
 	NodePoolName string
 	NodeClaimKey OfferingKey
+	// Price is the NodeClaim's hourly price from the NodeClaimPricer, or 0 if it's unknown.
+	Price float64
+
+	// nodeClaim is the tracked NodeClaim, kept to reprice it when its NodePool's offerings change
+	nodeClaim *v1.NodeClaim
+}
+
+type Options struct {
+	pricer cloudprovider.NodeClaimPricer
+}
+
+// WithNodeClaimPricer prices NodeClaims with pricer instead of cloudprovider.DefaultNodeClaimPricer.
+func WithNodeClaimPricer(pricer cloudprovider.NodeClaimPricer) option.Function[Options] {
+	return func(o *Options) {
+		o.pricer = pricer
+	}
 }
 
 // NewClusterCost creates and initializes a new ClusterCost instance for tracking
 // compute costs across the cluster. It requires a cloud provider for accessing
 // instance type and pricing information, and a Kubernetes client for NodePool lookups.
-func NewClusterCost(ctx context.Context, cloudProvider cloudprovider.CloudProvider, client client.Client) *ClusterCost {
+func NewClusterCost(ctx context.Context, cloudProvider cloudprovider.CloudProvider, client client.Client, opts ...option.Function[Options]) *ClusterCost {
 	return &ClusterCost{
 		npCostMap:     make(map[string]*NodePoolCost),
 		nodeClaimMap:  make(map[types.NamespacedName]NodeClaimMetaData),
 		cloudProvider: cloudProvider,
 		client:        client,
+		pricer:        option.Resolve(opts...).pricer,
 	}
 }
 
@@ -123,36 +146,25 @@ func NewClusterCost(ctx context.Context, cloudProvider cloudprovider.CloudProvid
 func (cc *ClusterCost) UpdateOfferings(ctx context.Context, np *v1.NodePool, instanceTypes []*cloudprovider.InstanceType) {
 	cc.Lock()
 	defer cc.Unlock()
-	cc.internalUpdateOfferings(np, instanceTypes)
+	cc.internalUpdateOfferings(ctx, np, instanceTypes)
 }
 
-func (cc *ClusterCost) internalUpdateOfferings(np *v1.NodePool, instanceTypes []*cloudprovider.InstanceType) {
-	instanceTypes = lo.Filter(instanceTypes, func(it *cloudprovider.InstanceType, _ int) bool {
-		return it != nil
-	})
-
+func (cc *ClusterCost) internalUpdateOfferings(ctx context.Context, np *v1.NodePool, instanceTypes []*cloudprovider.InstanceType) {
 	npCost, exists := cc.npCostMap[np.Name]
 	if !exists {
-		cc.npCostMap[np.Name] = &NodePoolCost{offeringCounts: make(map[OfferingKey]OfferingCount), cost: 0.0}
+		cc.npCostMap[np.Name] = newNodePoolCost()
 		return
 	}
+	npCost.instanceTypes = instanceTypesByName(instanceTypes)
 
-	// Build a temporary price index from the new instance types
-	prices := make(map[OfferingKey]float64, len(instanceTypes)*3)
-	for _, it := range instanceTypes {
-		for _, o := range it.Offerings {
-			prices[OfferingKey{InstanceName: it.Name, Zone: o.Zone(), CapacityType: o.CapacityType()}] = o.Price
-		}
-	}
-
-	// Update prices on active offerings and recalculate cost
+	// Reprice tracked NodeClaims and recalculate cost. A NodeClaim whose price can't be found keeps its last price.
 	cost := 0.0
-	for key, oc := range npCost.offeringCounts {
-		if newPrice, ok := prices[key]; ok {
-			oc.Price = newPrice
-			npCost.offeringCounts[key] = oc
+	for nn, metadata := range npCost.nodeClaims {
+		if price, ok := cloudprovider.PriceNodeClaim(ctx, cc.pricer, metadata.nodeClaim, npCost.instanceTypes[metadata.NodeClaimKey.InstanceName]); ok {
+			metadata.Price = price
+			cc.nodeClaimMap[nn] = *metadata
 		}
-		cost += float64(oc.Count) * oc.Price
+		cost += metadata.Price
 	}
 	npCost.cost = cost
 }
@@ -185,15 +197,12 @@ func (cc *ClusterCost) UpdateNodeClaim(ctx context.Context, nodeClaim *v1.NodeCl
 	nodePoolName := nodeClaim.Labels[v1.NodePoolLabelKey]
 	offeringKey := OfferingKey{CapacityType: nodeClaim.Labels[v1.CapacityTypeLabelKey], Zone: nodeClaim.Labels[corev1.LabelTopologyZone], InstanceName: nodeClaim.Labels[corev1.LabelInstanceTypeStable]}
 
-	err := cc.internalAddOffering(ctx, nodePoolName, offeringKey)
+	metadata, err := cc.internalAddNodeClaim(ctx, nodePoolName, offeringKey, nodeClaim)
 	if err != nil {
 		failed = true
 		return serrors.Wrap(err, "nodeclaim", klog.KObj(nodeClaim), "nodepool", nodePoolName)
 	}
-	cc.nodeClaimMap[client.ObjectKeyFromObject(nodeClaim)] = NodeClaimMetaData{
-		NodePoolName: nodePoolName,
-		NodeClaimKey: offeringKey,
-	}
+	cc.nodeClaimMap[client.ObjectKeyFromObject(nodeClaim)] = *metadata
 	return nil
 }
 
@@ -217,7 +226,7 @@ func (cc *ClusterCost) DeleteNodeClaim(ctx context.Context, nn types.NamespacedN
 		}
 	}()
 
-	err := cc.internalRemoveOffering(metadata.NodePoolName, metadata.NodeClaimKey)
+	err := cc.internalRemoveNodeClaim(metadata.NodePoolName, nn)
 	if err != nil {
 		failed = true
 		return serrors.Wrap(err, "namespacedName", nn, "nodepool", metadata.NodePoolName)
@@ -238,59 +247,61 @@ func (cc *ClusterCost) DeleteNodePool(ctx context.Context, npName string) {
 	delete(cc.npCostMap, npName)
 }
 
-// internalAddOffering updates the internal clusterCost state to include a new offering for a given nodepool.
+// internalAddNodeClaim updates the internal clusterCost state to include a new NodeClaim for a given nodepool.
 // It is used to increment the overall cost when a node joins the cluster. It is only called by UpdateNodeClaim
 // after that function has determined if a nodeclaim is new.
-func (cc *ClusterCost) internalAddOffering(ctx context.Context, npName string, offeringKey OfferingKey) error {
+func (cc *ClusterCost) internalAddNodeClaim(ctx context.Context, npName string, offeringKey OfferingKey, nodeClaim *v1.NodeClaim) (*NodeClaimMetaData, error) {
 	np := &v1.NodePool{}
 	if err := cc.client.Get(ctx, client.ObjectKey{Name: npName}, np, &client.GetOptions{}); err != nil {
-		return err
+		return nil, err
 	}
 
 	if _, exists := cc.npCostMap[npName]; !exists {
-		cc.npCostMap[npName] = &NodePoolCost{offeringCounts: make(map[OfferingKey]OfferingCount), cost: 0.0}
+		cc.npCostMap[npName] = newNodePoolCost()
 	}
+	npCost := cc.npCostMap[npName]
 
-	oc, exists := cc.npCostMap[npName].offeringCounts[offeringKey]
+	it, exists := npCost.instanceTypes[offeringKey.InstanceName]
 	if !exists {
 		instanceTypes, err := cc.cloudProvider.GetInstanceTypes(ctx, np)
 		if err != nil {
-			return fmt.Errorf("failed to get instance types for nodepool %q while adding offering for instance %q, %w", np.Name, offeringKey.InstanceName, err)
+			return nil, fmt.Errorf("failed to get instance types for nodepool %q while adding offering for instance %q, %w", np.Name, offeringKey.InstanceName, err)
 		}
-		price, found := findOfferingPrice(instanceTypes, offeringKey)
-		if !found {
-			log.FromContext(ctx).Error(fmt.Errorf("failed to find offering for instance %q in zone %q with capacity %q in nodepool %q", offeringKey.InstanceName, offeringKey.Zone, offeringKey.CapacityType, npName), "offering price unknown — cost tracking will undercount for this nodeclaim until next update")
-		}
-		oc = OfferingCount{Count: 0, Price: price}
+		npCost.instanceTypes = instanceTypesByName(instanceTypes)
+		it = npCost.instanceTypes[offeringKey.InstanceName]
 	}
-	oc.Count++
-	cc.npCostMap[npName].offeringCounts[offeringKey] = oc
-	cc.npCostMap[npName].cost += oc.Price
-	return nil
+	price, found := cloudprovider.PriceNodeClaim(ctx, cc.pricer, nodeClaim, it)
+	if !found {
+		log.FromContext(ctx).Error(fmt.Errorf("failed to find offering for instance %q in zone %q with capacity %q in nodepool %q", offeringKey.InstanceName, offeringKey.Zone, offeringKey.CapacityType, npName), "offering price unknown — cost tracking will undercount for this nodeclaim until next update")
+	}
+	metadata := &NodeClaimMetaData{
+		NodePoolName: npName,
+		NodeClaimKey: offeringKey,
+		Price:        price,
+		nodeClaim:    nodeClaim.DeepCopy(),
+	}
+	npCost.nodeClaims[client.ObjectKeyFromObject(nodeClaim)] = metadata
+	npCost.cost += price
+	return metadata, nil
 }
 
-// internalRemoveOffering updates the internal clusterCost state to remove an existing offering for a given nodepool.
+// internalRemoveNodeClaim updates the internal clusterCost state to remove an existing NodeClaim for a given nodepool.
 // It is used to decrement the overall cost when a node leaves the cluster. It is only called by DeleteNodeClaim
 // after that function has determined if a nodeclaim is already being accounted for.
-func (cc *ClusterCost) internalRemoveOffering(npName string, offeringKey OfferingKey) error {
+func (cc *ClusterCost) internalRemoveNodeClaim(npName string, nn types.NamespacedName) error {
 	npc, exists := cc.npCostMap[npName]
 	if !exists {
-		return fmt.Errorf("attempted to remove offering from nonexistent nodepool %q (instance, %q, zone, %q, capacity, %q)", npName, offeringKey.InstanceName, offeringKey.Zone, offeringKey.CapacityType)
+		return fmt.Errorf("attempted to remove nodeclaim %q from nonexistent nodepool %q", nn, npName)
 	}
 
-	oc, exists := npc.offeringCounts[offeringKey]
+	metadata, exists := npc.nodeClaims[nn]
 	if !exists {
-		return fmt.Errorf("attempted to remove nonexistent offering from nodepool %q (instance, %q, zone, %q, capacity, %q)", npName, offeringKey.InstanceName, offeringKey.Zone, offeringKey.CapacityType)
+		return fmt.Errorf("attempted to remove nonexistent nodeclaim %q from nodepool %q", nn, npName)
 	}
 
-	oc.Count--
-	npc.cost -= oc.Price
-	if oc.Count == 0 {
-		delete(npc.offeringCounts, offeringKey)
-	} else {
-		npc.offeringCounts[offeringKey] = oc
-	}
-	if len(npc.offeringCounts) == 0 {
+	npc.cost -= metadata.Price
+	delete(npc.nodeClaims, nn)
+	if len(npc.nodeClaims) == 0 {
 		delete(cc.npCostMap, npName)
 	}
 	return nil
@@ -323,14 +334,17 @@ func (cc *ClusterCost) GetNodepoolCost(np *v1.NodePool) float64 {
 	return npc.cost
 }
 
-func findOfferingPrice(instanceTypes []*cloudprovider.InstanceType, key OfferingKey) (float64, bool) {
-	for _, it := range instanceTypes {
-		if it == nil || it.Name != key.InstanceName {
-			continue
-		}
-		return it.OfferingPrice(key.Zone, key.CapacityType)
+func newNodePoolCost() *NodePoolCost {
+	return &NodePoolCost{
+		instanceTypes: map[string]*cloudprovider.InstanceType{},
+		nodeClaims:    map[types.NamespacedName]*NodeClaimMetaData{},
 	}
-	return 0, false
+}
+
+func instanceTypesByName(instanceTypes []*cloudprovider.InstanceType) map[string]*cloudprovider.InstanceType {
+	return lo.SliceToMap(lo.Compact(instanceTypes), func(it *cloudprovider.InstanceType) (string, *cloudprovider.InstanceType) {
+		return it.Name, it
+	})
 }
 
 func nodeClaimMissingLabels(nc v1.NodeClaim) bool {

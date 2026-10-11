@@ -23,6 +23,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/awslabs/operatorpkg/option"
+
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
@@ -61,6 +63,8 @@ type consolidation struct {
 	// evaluator is initialized non-nil at construction. SetNodePoolTotals
 	// replaces it with a balancedEvaluator carrying the new totals.
 	evaluator Evaluator
+	// candidateOptions are applied wherever this consolidation builds candidates, so every pass prices nodes alike.
+	candidateOptions []option.Function[CandidateOptions]
 }
 
 // NodePoolTotalsSetter is implemented by disruption methods that use balanced scoring.
@@ -73,16 +77,17 @@ func (c *consolidation) SetNodePoolTotals(totals map[string]NodePoolTotals) {
 }
 
 func MakeConsolidation(clock clock.Clock, cluster *state.Cluster, kubeClient client.Client, provisioner *provisioning.Provisioner,
-	cloudProvider cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue) consolidation {
+	cloudProvider cloudprovider.CloudProvider, recorder events.Recorder, queue *Queue, opts ...option.Function[CandidateOptions]) consolidation {
 	return consolidation{
-		queue:         queue,
-		clock:         clock,
-		cluster:       cluster,
-		kubeClient:    kubeClient,
-		provisioner:   provisioner,
-		cloudProvider: cloudProvider,
-		recorder:      recorder,
-		evaluator:     noopEvaluator{},
+		candidateOptions: opts,
+		queue:            queue,
+		clock:            clock,
+		cluster:          cluster,
+		kubeClient:       kubeClient,
+		provisioner:      provisioner,
+		cloudProvider:    cloudProvider,
+		recorder:         recorder,
+		evaluator:        noopEvaluator{},
 	}
 }
 
@@ -238,7 +243,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// should fail and we'll just leave the node alone. We don't need to do the same for reserved since the requirements
 	// are injected on by the scheduler.
 	ctReq := results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey)
-	if ctReq.Has(v1.CapacityTypeSpot) && ctReq.Has(v1.CapacityTypeOnDemand) {
+	if cloudprovider.HasCapacityTypeClass(ctReq, cloudprovider.CapacityTypeClassSpot) && cloudprovider.HasCapacityTypeClass(ctReq, cloudprovider.CapacityTypeClassOnDemand) {
 		results.NewNodeClaims[0].Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
 	}
 
