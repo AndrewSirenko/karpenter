@@ -27,22 +27,37 @@ import (
 )
 
 type Metric struct {
-	Name  string
-	Upper bool
-	Value func(*Result) float64
+	Name     string
+	Unit     string
+	Upper    bool
+	Measures string
+	OnBreach string
+	Value    func(*Result) float64
 }
 
 var (
-	TotalTimeMinutes = Metric{Name: "total_time_minutes", Upper: true, Value: func(r *Result) float64 { return r.Total.Minutes() }}
-	HeapMB           = Metric{Name: "heap_mb", Upper: true, Value: func(r *Result) float64 { return r.Resources.P95HeapMB }}
-	CPUCores         = Metric{Name: "cpu_cores", Upper: true, Value: func(r *Result) float64 { return r.Resources.AvgCPUCores }}
-	StartupSeconds   = Metric{Name: "startup_seconds", Upper: true, Value: func(r *Result) float64 { return r.StartupSeconds }}
+	TotalTimeMinutes = Metric{Name: "total_time_minutes", Unit: "min", Upper: true,
+		Measures: "Wall time from the start of the phase (before the trigger) to its end state.",
+		OnBreach: "The end state arrived later. With flat cpu_cores Karpenter is waiting (batching, NodeClaim launch, registration, API throttling); with higher cpu_cores it is computing more (scheduler Solve, disruption simulation).",
+		Value:    func(r *Result) float64 { return r.Total.Minutes() }}
+	HeapMB = Metric{Name: "heap_mb", Unit: "MB", Upper: true,
+		Measures: "P95 of the leader's go_gc_heap_live_bytes, sampled every 2s.",
+		OnBreach: "Karpenter retains more per pod, node or NodePool (caches, cluster state, per-NodePool offerings). Diff the report's counters and latency_stats against the last green run.",
+		Value:    func(r *Result) float64 { return r.Resources.P95HeapMB }}
+	CPUCores = Metric{Name: "cpu_cores", Unit: "cores", Upper: true,
+		Measures: "Average CPU of the leader over the phase (process_cpu_seconds_total delta over wall time).",
+		OnBreach: "More work per event: scheduler Solve, disruption simulation, or extra reconciles (controller_runtime_reconcile_total in the report's counters shows which controller).",
+		Value:    func(r *Result) float64 { return r.Resources.AvgCPUCores }}
+	StartupSeconds = Metric{Name: "startup_seconds", Unit: "s", Upper: true,
+		Measures: "Time from deleting the controller pods to the new leader reporting karpenter_cluster_state_synced=1.",
+		OnBreach: "Startup got slower: informer sync, cluster state sync, or a startup-time pass over every object. A crashloop here is an outage at scale.",
+		Value:    func(r *Result) float64 { return r.StartupSeconds }}
 
 	// TODO: gate on scheduling latency, the mean of karpenter_scheduler_scheduling_duration_seconds over a
 	// phase (it's still in the report as latency_stats). Cut for now because in 13 single runs a negative
 	// control (revert #2013) moved it +42%, as much as real regressions did, so it would flake. It needs
 	// repeated runs or base-vs-head on the same cluster before it can gate.
-	metrics = []Metric{TotalTimeMinutes, HeapMB, CPUCores, StartupSeconds}
+	Metrics = []Metric{TotalTimeMinutes, HeapMB, CPUCores, StartupSeconds}
 )
 
 // Tier decides what a breached gate does. Every new gate starts Experimental; a provider's owner
@@ -94,7 +109,7 @@ func overrides() (map[string]map[string]float64, error) {
 	for id, byMetric := range o {
 		for name := range byMetric {
 			known := false
-			for _, m := range metrics {
+			for _, m := range Metrics {
 				known = known || m.Name == name
 			}
 			if !known {
@@ -124,20 +139,22 @@ func evaluate(gates []Gate, id string, r *Result) []GateResult {
 	return results
 }
 
-func assertGates(id, help string, results []GateResult) {
+func assertGates(r *Run, id string, results []GateResult) {
 	GinkgoHelper()
-	var failed []string
+	var failed []GateResult
 	for _, g := range results {
 		switch {
 		case g.Passed:
 			GinkgoWriter.Printf("gate ok   %s: %s\n", id, g)
 		case g.Tier == TierExperimental:
 			GinkgoWriter.Printf("gate WARN %s: %s\n", id, g)
-			AddReportEntry("experimental gate breached", fmt.Sprintf("%s: %s", id, g))
+			AddReportEntry("experimental gate breached", r.alarm(id, []GateResult{g}))
 			fmt.Printf("::warning title=perf %s::%s\n", id, g)
 		default:
-			failed = append(failed, g.String())
+			failed = append(failed, g)
 		}
 	}
-	Expect(failed).To(BeEmpty(), "%s breached stable performance gates\n\n%s", id, help)
+	if len(failed) > 0 {
+		Fail(r.alarm(id, failed))
+	}
 }

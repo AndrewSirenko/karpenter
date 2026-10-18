@@ -28,9 +28,9 @@ import (
 	"sigs.k8s.io/karpenter/test/suites/performancev2/perf"
 )
 
-// kwok is the core KWOK provider's plugin: how to reach the controller, which NodeClass and
+// KWOK is the core KWOK provider's plugin: how to reach the controller, which NodeClass and
 // NodePool to start from, how big each vector is, and the level of every phase it runs.
-func kwok(c env.Clients) *perf.Provider {
+func KWOK(c env.Clients) *perf.Provider {
 	return &perf.Provider{
 		Name:       "kwok",
 		Client:     c.Client,
@@ -56,7 +56,7 @@ func kwok(c env.Clients) *perf.Provider {
 		Levels: perf.Levels{
 			"pods/scaleOut":        {perf.TotalTimeMinutes.Experimental(2), perf.HeapMB.Experimental(150), perf.CPUCores.Experimental(0.7)},
 			"pods/consolidation":   {perf.HeapMB.Experimental(150), perf.CPUCores.Experimental(0.4)},
-			"nodepools/scheduling": {perf.HeapMB.Experimental(300)},
+			"nodepools/scheduling": {perf.TotalTimeMinutes.Experimental(2), perf.HeapMB.Experimental(300)},
 			"nodepools/startup":    {perf.StartupSeconds.Experimental(60), perf.HeapMB.Experimental(300)},
 		},
 	}

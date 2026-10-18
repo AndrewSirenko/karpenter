@@ -35,4 +35,4 @@ func TestPerformance(t *testing.T) {
 	RunSpecs(t, "PerformanceV2")
 }
 
-var _ = perf.Suite(func() *perf.Provider { return kwok(clients) }, scenarios.All...)
+var _ = perf.Suite(func() *perf.Provider { return KWOK(clients) }, scenarios.All...)

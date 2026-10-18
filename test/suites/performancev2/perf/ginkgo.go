@@ -22,6 +22,7 @@ import (
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // Suite registers each scenario as a Ginkgo spec for the provider. Specs for scenarios the
@@ -33,6 +34,7 @@ func Suite(provider func() *Provider, scenarios ...Scenario) bool {
 			Context(s.Name, Label("perf", "vector:"+string(s.Vector)), func() {
 				It("should hold its performance levels", func(ctx context.Context) {
 					p := provider()
+					Expect(Validate(p, scenarios)).To(Succeed())
 					if !p.enabled(s) {
 						Skip("scenario " + s.Name + " is off for provider " + p.Name)
 					}

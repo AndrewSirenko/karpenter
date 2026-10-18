@@ -42,12 +42,20 @@ import (
 
 const ScenarioLabel = "perf.karpenter.sh/scenario"
 
+// Scenario is a provider-agnostic workload along one vector. Summary and the phase summaries say what it
+// stresses and why; what each metric means comes from the Metric, so alarms and the inventory are generated.
 type Scenario struct {
 	Name        string
+	Summary     string
 	Vector      Vector
 	DefaultSize int
-	Help        string
+	Phases      []PhaseSpec
 	Run         func(*Run)
+}
+
+type PhaseSpec struct {
+	Name    string
+	Summary string
 }
 
 // Run is one execution of a scenario against a provider. Objects created through it are deleted
@@ -232,6 +240,8 @@ func hasTaint(n *corev1.Node, key string) bool {
 func (r *Run) phaseID(name string) (string, []Gate) {
 	GinkgoHelper()
 	id := r.Scenario.Name + "/" + name
+	_, declared := r.Scenario.phase(name)
+	Expect(declared).To(BeTrue(), "scenario %s runs phase %q but doesn't declare it in Phases", r.Scenario.Name, name)
 	gates, ok := r.Provider.Levels[id]
 	Expect(ok).To(BeTrue(), "provider %s has no levels for phase %s; add an entry, even an empty one", r.Provider.Name, id)
 	return id, gates
@@ -242,7 +252,7 @@ func (r *Run) finish(id string, gates []Gate, rep *Result) *Result {
 	rep.Provider, rep.Phase, rep.Vector, rep.Size, rep.Time = r.Provider.Name, id, r.Scenario.Vector, r.Size, time.Now()
 	rep.Gates = evaluate(gates, id, rep)
 	write(rep)
-	assertGates(id, r.Scenario.Help, rep.Gates)
+	assertGates(r, id, rep.Gates)
 	return rep
 }
 

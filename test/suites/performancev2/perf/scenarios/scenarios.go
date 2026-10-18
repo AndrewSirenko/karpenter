@@ -32,14 +32,11 @@ var Pods = perf.Scenario{
 	Name:        "pods",
 	Vector:      perf.VectorPods,
 	DefaultSize: 1000,
-	Help: `ALARM pods: provisioning or consolidation of N pods on one NodePool got slower or more expensive.
-Size: total pods (two shapes, 900m/3100Mi and 3500m/28Gi, half each).
-pods/scaleOut:
-  - total_time_minutes up: the provisioner is slower end to end. If cpu_cores is flat, look at batching, NodeClaim launch or registration; if cpu_cores is up, look at Solve (pkg/controllers/provisioning/scheduling, pkg/scheduling).
-  - heap_mb or cpu_cores up: more work per pod in the scheduler, or churn outside it (informers, cluster state). The report's latency_stats and counters (reconcile counts per controller) narrow it down.
-pods/consolidation:
-  - heap_mb or cpu_cores up: disruption evaluation (pkg/controllers/disruption, SimulateScheduling) costs more per pass.
-Reproduce: go test ./test/suites/performancev2/... --ginkgo.focus=pods, then diff the report JSON against the last green main run.`,
+	Summary:     "Provisions then consolidates N pods of two shapes (900m/3100Mi and 3500m/28Gi) on one NodePool, the baseline every change touches.",
+	Phases: []perf.PhaseSpec{
+		{Name: "scaleOut", Summary: "N pending pods until all are healthy: provisioning throughput (batching, scheduler Solve, NodeClaim launch)."},
+		{Name: "consolidation", Summary: "Scale to 70% until nodes stop being disrupted: disruption evaluation and SimulateScheduling cost."},
+	},
 	Run: func(r *perf.Run) {
 		half := r.Size / 2
 		small := r.Deployment("small", half, "900m", "3100Mi")
@@ -61,16 +58,11 @@ var NodePools = perf.Scenario{
 	Name:        "nodepools",
 	Vector:      perf.VectorNodePools,
 	DefaultSize: 1000,
-	Help: `ALARM nodepools: Karpenter got slower at scheduling or starting up when the cluster has N NodePools.
-Size: NodePools. All but one carry a tenant NoSchedule taint the pods don't tolerate, so every
-scheduling pass has to rule out N-1 NodePools (the multi-tenant platform pattern).
-nodepools/scheduling (100 pods onto the one open NodePool):
-  - total_time_minutes up: per-NodePool work in NewScheduler or Solve grew (templates, instance type filtering, topology domain groups). Run BenchmarkNewScheduler/vector=nodepools to find the function.
-  - heap_mb up: per-NodePool state (offerings, cost tracking, NodeOverlay store) grew.
-nodepools/startup (controller restarted with N NodePools present):
-  - startup_seconds up: cluster state sync, informer start or a startup-time pass over NodePools got slower. A crashloop here is an outage at scale.
-  - heap_mb up: startup-time caches scale with NodePools.
-Reproduce: go test ./test/suites/performancev2/... --ginkgo.focus=nodepools.`,
+	Summary:     "N NodePools where all but one carry a tenant NoSchedule taint the pods don't tolerate, so every pass rules out N-1 NodePools (the multi-tenant platform pattern).",
+	Phases: []perf.PhaseSpec{
+		{Name: "scheduling", Summary: "100 pods onto the one open NodePool: per-NodePool cost in NewScheduler and Solve (templates, instance type filtering, topology domain groups). Find the function with BenchmarkNewScheduler/vector=nodepools."},
+		{Name: "startup", Summary: "Restart the controller with N NodePools present: per-NodePool cost at startup (cluster state sync, offerings, cost tracking, NodeOverlay store)."},
+	},
 	Run: func(r *perf.Run) {
 		r.Create(r.NodeClass)
 		pools := make([]client.Object, 0, r.Size)
