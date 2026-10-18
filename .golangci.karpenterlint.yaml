@@ -1,0 +1,87 @@
+version: "2"
+# Linters aimed at regressions that shipped more than once. Not part of `make verify` yet;
+# run with `make karpenterlint`. Each entry names the issues or PRs it would have caught.
+run:
+  build-tags:
+    - test_performance
+  tests: true
+  timeout: 10m
+linters:
+  default: none
+  enable:
+    - karpenterlint
+    - forbidigo
+    - ginkgolinter
+    - modernize
+    - prealloc
+    - gocritic
+  settings:
+    custom:
+      karpenterlint:
+        type: "module"
+        description: Karpenter specific analyzers for recurring regressions. Rule docs live in hack/tools/karpenterlint/internal/analyzers/*/.
+        settings:
+          disable: []
+    # Use the injected clock. Wall-clock reads made tests flaky and split one
+    # decision pass across two timestamps.
+    # #3009, #3045 (clock injection refactors), #3406 (repair candidates scored at different times),
+    # #3038 (negative grace period from now() vs the terminator's clock).
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^time\.(Now|Since|Until)$
+          msg: use the injected clock.Clock (#3009, #3045, #3406)
+        - pattern: ^clock\.RealClock$
+          msg: accept a clock.Clock instead of constructing RealClock (#3009, #3045)
+    # Assertions with no matcher pass silently; 17 on main, including e2e guards.
+    # Also forbids focused containers left in.
+    ginkgolinter:
+      suppress-len-assertion: true
+      suppress-nil-assertion: true
+      suppress-err-assertion: true
+      suppress-compare-assertion: true
+      suppress-async-assertion: true
+      suppress-type-compare-assertion: true
+      forbid-focus-container: true
+      allow-havelen-zero: true
+    # `go fix ./...` in #3024 took lo.ToPtr/ptr.To from 1110 to 91 call sites; it is back to 641
+    # (reported as newexpr).
+    modernize: {}
+    # Allocation regressions fixed in #3211, #3310, #3137, #3068. Main disables prealloc.
+    prealloc:
+      simple: true
+      range-loops: true
+    # Large struct copies in hot loops (#3211, #3310).
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - rangeValCopy
+  exclusions:
+    generated: lax
+    rules:
+      # e2e and perf suites run against real clusters and real time.
+      - path: ^test/
+        linters:
+          - forbidigo
+      - path: _test\.go$
+        linters:
+          - prealloc
+          - gocritic
+      # Test builders copy and sort on purpose.
+      - path: ^pkg/test/
+        linters:
+          - karpenterlint
+        text: "^(copylit|parammut):"
+    paths:
+      - tools
+      - website
+      - hack
+      - charts
+      - designs
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  fix: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
