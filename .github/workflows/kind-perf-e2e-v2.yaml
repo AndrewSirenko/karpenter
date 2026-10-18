@@ -1,0 +1,16 @@
+name: kind-perf-e2e-v2
+on:
+  workflow_dispatch:
+jobs:
+  kind-perf-e2e-v2:
+    permissions:
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ["pods", "nodepools"]
+    uses: ./.github/workflows/e2e.yaml
+    with:
+      suite: Performancev2
+      focus: ${{ matrix.scenario }}
+      test_name: v2 ${{ matrix.scenario }}
