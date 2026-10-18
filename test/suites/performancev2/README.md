@@ -83,7 +83,25 @@ KARPENTER_PERF_SWEEP_GRID='{"pods":[100,500],"nodepools":[1,100]}' ...   # small
 make perf-plot DIR=/tmp/sweep    # writes perf.html
 ```
 
-![example sweep on kind](docs/sweep-example.png)
+![30-cell sweep on EKS](docs/sweep-eks.png)
+
+This is the 30-cell `nodepools` sweep on EKS. Setup:
+- **Cluster:** `karpenter-perf-v2`, tier-xl provisioned control plane.
+- **Controller:** 14 CPU / 56 Gi on a dedicated m7i.4xlarge.
+- **Grid:** pods [100…20000] × nodepools [1…10000], all 30 cells passing.
+- **Commit:** upstream main 6eac93ba.
+
+What it shows:
+- **Scale-out time is bound by node registration.** It's about 180 s at 20k pods regardless of NodePool count.
+- **NodePool cost lands in heap and CPU.** That's why the `nodepools` levels gate on those.
+
+  | | 1 NodePool | 10k NodePools |
+  |---|---|---|
+  | Heap at 100 pods | 25 MB | 275 MB |
+  | Heap at 20k pods | 703 MB | 1114 MB |
+  | CPU at 20k pods | 3.0 cores | 5.9 cores |
+
+- **Startup has a cliff only where both vectors are high.** It's about 20 s across most of the grid, but 50-55 s at 3000+ NodePools × 20k pods, with 1 GB of heap at 10k × 20k.
 
 `perf.html` has one heat map per phase and metric, with pods on x and NodePools on y:
 - The shade is log-scaled, from green (the panel's lowest value) to red (its highest).
