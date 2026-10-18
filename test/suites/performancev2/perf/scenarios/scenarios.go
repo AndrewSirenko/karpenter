@@ -42,8 +42,10 @@ var Pods = perf.Scenario{
 		small := r.Deployment("small", half, "900m", "3100Mi")
 		large := r.Deployment("large", half, "3500m", "28Gi")
 
+		r.Create(r.NodeClass, r.NodePool)
+		r.AwaitNodePoolsReady(5 * time.Minute)
 		scaleOut := r.StartPhase("scaleOut")
-		r.Create(r.NodeClass, r.NodePool, small, large)
+		r.Create(small, large)
 		scaleOut.AwaitScaleOut(2*half, 15*time.Minute)
 
 		consolidation := r.StartPhase("consolidation")
@@ -78,6 +80,7 @@ var NodePools = perf.Scenario{
 			pools = append(pools, np)
 		}
 		r.CreateParallel(pools)
+		r.AwaitNodePoolsReady(15 * time.Minute)
 		app := r.Deployment("app", pods, "1", "2Gi")
 
 		scheduling := r.StartPhase("scheduling")
@@ -101,8 +104,10 @@ var Topology = perf.Scenario{
 		zone := r.Deployment("zone", n*45/100, "900m", "3100Mi", test.WithZoneSpread())
 		host := r.Deployment("host", n-n/10-n*45/100, "900m", "3100Mi", test.WithHostnameSpread())
 
+		r.Create(r.NodeClass, r.NodePool)
+		r.AwaitNodePoolsReady(5 * time.Minute)
 		scaleOut := r.StartPhase("scaleOut")
-		r.Create(r.NodeClass, r.NodePool, anti, zone, host)
+		r.Create(anti, zone, host)
 		scaleOut.AwaitScaleOut(n, 20*time.Minute)
 	},
 }

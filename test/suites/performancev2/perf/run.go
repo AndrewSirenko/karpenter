@@ -165,6 +165,23 @@ func (r *Run) CreateParallel(objs []client.Object) {
 	}
 }
 
+// AwaitNodePoolsReady waits until every NodePool the run created is Ready. Start phases after it, so they
+// measure provisioning rather than how fast Karpenter marks new NodePools Ready.
+func (r *Run) AwaitNodePoolsReady(timeout time.Duration) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		pools := &v1.NodePoolList{}
+		g.Expect(r.Provider.Client.List(r.ctx, pools, client.MatchingLabels{ScenarioLabel: r.Scenario.Name})).To(Succeed())
+		ready := 0
+		for i := range pools.Items {
+			if pools.Items[i].StatusConditions().Root().IsTrue() {
+				ready++
+			}
+		}
+		g.Expect(ready).To(Equal(r.nodePools.Len()), "Ready NodePools")
+	}).WithTimeout(timeout).WithPolling(2 * time.Second).Should(Succeed())
+}
+
 func (r *Run) Scale(replicas int, deps ...*appsv1.Deployment) {
 	GinkgoHelper()
 	for _, d := range deps {
