@@ -16,3 +16,4 @@ jobs:
     with: 
       k8s_version: ${{ matrix.k8sVersion }}
       suite: ${{ matrix.suite }}
+      cache_mutation_detector: true
