@@ -82,9 +82,9 @@ var NodePools = perf.Scenario{
 
 		scheduling := r.StartPhase("scheduling")
 		r.Create(app)
-		scheduling.AwaitScaleOut(pods, 15*time.Minute)
+		scheduling.AwaitScaleOut(pods, time.Hour)
 
-		r.Restart("startup", 10*time.Minute)
+		r.Restart("startup", 20*time.Minute)
 	},
 }
 

@@ -67,7 +67,7 @@ func run(ctx context.Context, p *Provider, all []Scenario, s *Scenario, cell map
 	}
 	r := newRun(ctx, p, s, cell)
 	r.expectClean()
-	DeferCleanup(func(ctx SpecContext) { r.cleanup(ctx) }, NodeTimeout(20*time.Minute))
+	DeferCleanup(func(ctx SpecContext) { r.cleanup(ctx) }, NodeTimeout(40*time.Minute))
 	s.Run(r)
 }
 

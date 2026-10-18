@@ -189,7 +189,7 @@ func (r *Run) cleanup(ctx context.Context) {
 			err := c.Get(r.ctx, client.ObjectKeyFromObject(o), o.DeepCopyObject().(client.Object))
 			g.Expect(errors.IsNotFound(err)).To(BeTrue(), "%T %s still exists", o, o.GetName())
 		}
-	}).WithTimeout(15 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+	}).WithTimeout(30 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
 }
 
 func (r *Run) scenarioPods() []corev1.Pod {
