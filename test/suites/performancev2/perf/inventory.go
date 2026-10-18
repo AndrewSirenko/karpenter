@@ -66,7 +66,7 @@ func (r *Run) alarm(id string, breached []GateResult) string {
 	_, name, _ := strings.Cut(id, "/")
 	ph, _ := r.Scenario.phase(name)
 	var b strings.Builder
-	fmt.Fprintf(&b, "ALARM %s on %s (size %d)\n%s\n%s\n", id, r.Provider.Name, r.Size, r.Scenario.Summary, ph.Summary)
+	fmt.Fprintf(&b, "ALARM %s on %s (%s)\n%s\n%s\n", id, r.Provider.Name, sizesLabel(r.Sizes, "=", " "), r.Scenario.Summary, ph.Summary)
 	for _, g := range breached {
 		m := metricByName(g.Metric)
 		fmt.Fprintf(&b, "\n%s\n  measures: %s\n  check: %s\n", g, m.Measures, m.OnBreach)
@@ -75,37 +75,86 @@ func (r *Run) alarm(id string, breached []GateResult) string {
 	return b.String()
 }
 
-// Inventory renders what a provider runs: every scenario and phase with its level per metric, plus what
-// each metric means. It is generated from the same values the suite uses.
+func (p *Provider) sizes(s *Scenario) map[Vector]int {
+	out := map[Vector]int{}
+	for v, def := range s.Vectors {
+		out[v] = p.size(s.Name, v, def)
+	}
+	return out
+}
+
+func cells(grid map[Vector][]int) []map[Vector]int {
+	out := []map[Vector]int{{}}
+	keys := make([]string, 0, len(grid))
+	for v := range grid {
+		keys = append(keys, string(v))
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var next []map[Vector]int
+		for _, c := range out {
+			for _, n := range grid[Vector(k)] {
+				cc := map[Vector]int{Vector(k): n}
+				for kk, vv := range c {
+					cc[kk] = vv
+				}
+				next = append(next, cc)
+			}
+		}
+		out = next
+	}
+	return out
+}
+
+// Inventory renders what a provider runs: every scenario and phase with its level per metric, the sweep
+// grids, and what each metric means. It is generated from the same values the suite uses.
 func Inventory(p *Provider, scenarios []Scenario) (string, error) {
 	if err := Validate(p, scenarios); err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Provider %s\n\n| scenario | vector | size | phase | metric | level | bound |\n|---|---|---|---|---|---|---|\n", p.Name)
+	fmt.Fprintf(&b, "## Provider %s\n\n| scenario | sizes | phase | metric | level | bound |\n|---|---|---|---|---|---|\n", p.Name)
 	for i := range scenarios {
 		s := &scenarios[i]
+		sz := sizesLabel(p.sizes(s), "=", " ")
 		for _, ph := range s.Phases {
 			gates, ok := p.Levels[s.Name+"/"+ph.Name]
 			switch {
 			case !ok:
-				fmt.Fprintf(&b, "| %s | %s | %d | %s | - | off | - |\n", s.Name, s.Vector, p.size(s.Vector, s.DefaultSize), ph.Name)
+				fmt.Fprintf(&b, "| %s | %s | %s | - | off | - |\n", s.Name, sz, ph.Name)
 			case len(gates) == 0:
-				fmt.Fprintf(&b, "| %s | %s | %d | %s | - | measured only | - |\n", s.Name, s.Vector, p.size(s.Vector, s.DefaultSize), ph.Name)
+				fmt.Fprintf(&b, "| %s | %s | %s | - | measured only | - |\n", s.Name, sz, ph.Name)
 			}
 			for _, g := range gates {
 				op := ">"
 				if g.Metric.Upper {
 					op = "<"
 				}
-				fmt.Fprintf(&b, "| %s | %s | %d | %s | %s | %s | %s %g %s |\n", s.Name, s.Vector, p.size(s.Vector, s.DefaultSize), ph.Name, g.Metric.Name, g.Tier, op, g.Bound, g.Metric.Unit)
+				fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s %g %s |\n", s.Name, sz, ph.Name, g.Metric.Name, g.Tier, op, g.Bound, g.Metric.Unit)
 			}
 		}
+	}
+	b.WriteString("\n## Sweeps (measured only, never gate; run with KARPENTER_PERF_SWEEP=<scenario>)\n\n| scenario | grid | cells |\n|---|---|---|\n")
+	for i := range scenarios {
+		s := &scenarios[i]
+		if len(s.Sweep) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(s.Sweep))
+		for v := range s.Sweep {
+			keys = append(keys, string(v))
+		}
+		sort.Strings(keys)
+		axes := make([]string, 0, len(keys))
+		for _, k := range keys {
+			axes = append(axes, fmt.Sprintf("%s %v", k, s.Sweep[Vector(k)]))
+		}
+		fmt.Fprintf(&b, "| %s | %s | %d |\n", s.Name, strings.Join(axes, " x "), len(cells(s.Sweep)))
 	}
 	b.WriteString("\n## Scenarios\n\n")
 	for i := range scenarios {
 		s := &scenarios[i]
-		fmt.Fprintf(&b, "- **%s** (vector %s): %s\n", s.Name, s.Vector, s.Summary)
+		fmt.Fprintf(&b, "- **%s** (%s): %s\n", s.Name, sizesLabel(s.Vectors, "=", " "), s.Summary)
 		for _, ph := range s.Phases {
 			fmt.Fprintf(&b, "  - `%s/%s`: %s\n", s.Name, ph.Name, ph.Summary)
 		}

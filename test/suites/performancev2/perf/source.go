@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -53,6 +54,7 @@ type sample struct {
 type source struct {
 	p      *Provider
 	pod    string
+	commit string
 	first  map[string]*dto.MetricFamily
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -67,7 +69,7 @@ func startSource(ctx context.Context, p *Provider) *source {
 	GinkgoHelper()
 	pod, families := eventuallyLeader(ctx, p, 2*time.Minute)
 	ctx, cancel := context.WithCancel(ctx)
-	s := &source{p: p, pod: pod, first: families, last: families, cancel: cancel, done: make(chan struct{})}
+	s := &source{p: p, pod: pod, commit: buildCommit(families), first: families, last: families, cancel: cancel, done: make(chan struct{})}
 	s.record(families)
 	go s.run(ctx)
 	return s
@@ -194,6 +196,20 @@ func scrape(ctx context.Context, p *Provider, pod string) (map[string]*dto.Metri
 	}
 	parser := expfmt.NewTextParser(model.UTF8Validation)
 	return parser.TextToMetricFamilies(bytes.NewReader(data))
+}
+
+func buildCommit(f map[string]*dto.MetricFamily) string {
+	if c := os.Getenv("KARPENTER_PERF_COMMIT"); c != "" {
+		return c
+	}
+	for _, m := range f["karpenter_build_info"].GetMetric() {
+		for _, l := range m.GetLabel() {
+			if l.GetName() == "commit" {
+				return l.GetValue()
+			}
+		}
+	}
+	return ""
 }
 
 func gauge(f map[string]*dto.MetricFamily, name string) float64 {

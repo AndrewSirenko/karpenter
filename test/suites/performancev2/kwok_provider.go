@@ -52,12 +52,12 @@ func KWOK(c env.Clients) *perf.Provider {
 			np.Spec.Disruption.Budgets = []v1.Budget{{Nodes: "100%"}}
 			return np
 		},
-		Sizes: map[perf.Vector]int{perf.VectorPods: 1000, perf.VectorNodePools: 1000},
 		Levels: perf.Levels{
 			"pods/scaleOut":        {perf.TotalTimeMinutes.Experimental(2), perf.HeapMB.Experimental(150), perf.CPUCores.Experimental(0.7)},
 			"pods/consolidation":   {perf.HeapMB.Experimental(150), perf.CPUCores.Experimental(0.4)},
 			"nodepools/scheduling": {perf.TotalTimeMinutes.Experimental(2), perf.HeapMB.Experimental(300)},
 			"nodepools/startup":    {perf.StartupSeconds.Experimental(60), perf.HeapMB.Experimental(300)},
+			"topology/scaleOut":    {perf.TotalTimeMinutes.Experimental(5), perf.HeapMB.Experimental(250), perf.CPUCores.Experimental(1)},
 		},
 	}
 }

@@ -45,12 +45,12 @@ const ScenarioLabel = "perf.karpenter.sh/scenario"
 // Scenario is a provider-agnostic workload along one vector. Summary and the phase summaries say what it
 // stresses and why; what each metric means comes from the Metric, so alarms and the inventory are generated.
 type Scenario struct {
-	Name        string
-	Summary     string
-	Vector      Vector
-	DefaultSize int
-	Phases      []PhaseSpec
-	Run         func(*Run)
+	Name    string
+	Summary string
+	Vectors map[Vector]int
+	Sweep   map[Vector][]int
+	Phases  []PhaseSpec
+	Run     func(*Run)
 }
 
 type PhaseSpec struct {
@@ -63,19 +63,35 @@ type PhaseSpec struct {
 type Run struct {
 	Provider  *Provider
 	Scenario  *Scenario
-	Size      int
+	Sizes     map[Vector]int
 	NodeClass client.Object
 	NodePool  *v1.NodePool
 
 	ctx       context.Context
 	created   []client.Object
 	nodePools sets.Set[string]
+	sweep     bool
 }
 
-func newRun(ctx context.Context, p *Provider, s *Scenario) *Run {
+func newRun(ctx context.Context, p *Provider, s *Scenario, cell map[Vector]int) *Run {
 	nc := p.NodeClass()
 	np := p.NodePool(nc)
-	return &Run{Provider: p, Scenario: s, Size: p.size(s.Vector, s.DefaultSize), NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string]()}
+	sizes := map[Vector]int{}
+	for v, def := range s.Vectors {
+		sizes[v] = p.size(s.Name, v, def)
+		if n, ok := cell[v]; ok {
+			sizes[v] = n
+		}
+	}
+	return &Run{Provider: p, Scenario: s, Sizes: sizes, NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string](), sweep: cell != nil}
+}
+
+// Size is the run's size along a vector the scenario declares.
+func (r *Run) Size(v Vector) int {
+	GinkgoHelper()
+	n, ok := r.Sizes[v]
+	Expect(ok).To(BeTrue(), "scenario %s doesn't declare vector %s", r.Scenario.Name, v)
+	return n
 }
 
 func (r *Run) Deployment(name string, replicas int, cpu, memory string, opts ...test.DeploymentOptionModifier) *appsv1.Deployment {
@@ -249,16 +265,18 @@ func (r *Run) phaseID(name string) (string, []Gate) {
 
 func (r *Run) finish(id string, gates []Gate, rep *Result) *Result {
 	GinkgoHelper()
-	rep.Provider, rep.Phase, rep.Vector, rep.Size, rep.Time = r.Provider.Name, id, r.Scenario.Vector, r.Size, time.Now()
+	rep.Provider, rep.Phase, rep.Sizes, rep.Time = r.Provider.Name, id, r.Sizes, time.Now()
 	rep.Gates = evaluate(gates, id, rep)
 	write(rep)
-	assertGates(r, id, rep.Gates)
+	if !r.sweep {
+		assertGates(r, id, rep.Gates)
+	}
 	return rep
 }
 
 func write(rep *Result) {
-	GinkgoWriter.Printf("perf %s: total=%s active=%s pods=%d nodes=%d heap_p95=%.1fMB cpu_avg=%.3f startup=%.1fs samples=%d\n",
-		rep.Phase, rep.Total.Round(time.Second), rep.Active.Round(time.Second), rep.Pods, rep.Nodes,
+	GinkgoWriter.Printf("perf %s [%s]: total=%s active=%s pods=%d nodes=%d heap_p95=%.1fMB cpu_avg=%.3f startup=%.1fs samples=%d\n",
+		rep.Phase, sizesLabel(rep.Sizes, "=", " "), rep.Total.Round(time.Second), rep.Active.Round(time.Second), rep.Pods, rep.Nodes,
 		rep.Resources.P95HeapMB, rep.Resources.AvgCPUCores, rep.StartupSeconds, rep.Resources.Samples)
 	dir := os.Getenv("OUTPUT_DIR")
 	if dir == "" {
@@ -266,6 +284,6 @@ func write(rep *Result) {
 	}
 	b, err := json.MarshalIndent(rep, "", "  ")
 	Expect(err).ToNot(HaveOccurred())
-	name := strings.NewReplacer("/", "_").Replace(fmt.Sprintf("%s_%s_performance_report.json", rep.Provider, rep.Phase))
+	name := strings.NewReplacer("/", "_").Replace(fmt.Sprintf("%s_%s_%s_performance_report.json", rep.Provider, rep.Phase, sizesLabel(rep.Sizes, "-", "_")))
 	Expect(os.WriteFile(filepath.Join(filepath.Clean(dir), filepath.Base(name)), b, 0o600)).To(Succeed())
 }

@@ -80,7 +80,7 @@ func (p *Phase) end(rep *Result, lastActivity time.Time) *Result {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res.Samples).To(BeNumerically(">", 1), "collected too few metrics samples to gate on")
 	nodes := p.r.nodes()
-	rep.Resources, rep.LatencyStats, rep.Counters = res, hists, counters
+	rep.Resources, rep.LatencyStats, rep.Counters, rep.Commit = res, hists, counters, p.src.commit
 	rep.Nodes, rep.NodesNetChange = len(nodes), len(nodes)-p.initialNodes
 	for k, v := range counters {
 		if strings.HasPrefix(k, "karpenter_pods_drained_total") {
@@ -112,6 +112,7 @@ func (r *Run) Restart(name string, timeout time.Duration) *Result {
 		g.Expect(old[pod]).To(BeFalse(), "old controller pod %s still leading", pod)
 		g.Expect(gauge(f, "karpenter_cluster_state_synced")).To(Equal(1.0))
 		rep.StartupSeconds = time.Since(start).Seconds()
+		rep.Commit = buildCommit(f)
 		rep.StartupCPUSecond = counter(f, "process_cpu_seconds_total")
 		rep.Resources = ResourceStats{P95HeapMB: gauge(f, "go_gc_heap_live_bytes") / (1 << 20), MaxHeapMB: gauge(f, "go_gc_heap_live_bytes") / (1 << 20), Samples: 1}
 	}).WithTimeout(timeout).WithPolling(time.Second).Should(Succeed())

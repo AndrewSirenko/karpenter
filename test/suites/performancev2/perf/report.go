@@ -19,14 +19,14 @@ package perf
 import "time"
 
 type Result struct {
-	Provider string        `json:"provider"`
-	Phase    string        `json:"phase"`
-	Vector   Vector        `json:"vector"`
-	Size     int           `json:"size"`
-	Kind     string        `json:"kind"`
-	Time     time.Time     `json:"timestamp"`
-	Total    time.Duration `json:"total_time"`
-	Active   time.Duration `json:"active_time"`
+	Provider string         `json:"provider"`
+	Phase    string         `json:"phase"`
+	Commit   string         `json:"commit"`
+	Sizes    map[Vector]int `json:"sizes"`
+	Kind     string         `json:"kind"`
+	Time     time.Time      `json:"timestamp"`
+	Total    time.Duration  `json:"total_time"`
+	Active   time.Duration  `json:"active_time"`
 
 	Pods           int `json:"pods"`
 	PodsNetChange  int `json:"pods_net_change"`
