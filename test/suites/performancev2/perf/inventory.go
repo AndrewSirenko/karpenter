@@ -46,6 +46,26 @@ func Validate(p *Provider, scenarios []Scenario) error {
 			errs = append(errs, fmt.Sprintf("provider %s sets levels for %q, which no scenario declares", p.Name, id))
 		}
 	}
+	for id, gates := range p.Levels {
+		bound := map[string]float64{}
+		for _, g := range gates {
+			bound[g.Metric.Name] = g.Bound
+		}
+		if _, ok := bound[TotalTimeSeconds.Name]; ok {
+			if _, ok := bound[PodReady.Max.Name]; ok {
+				errs = append(errs, fmt.Sprintf("provider %s gates %s on both %s and %s, which measure nearly the same thing; keep one", p.Name, id, TotalTimeSeconds.Name, PodReady.Max.Name))
+			}
+		}
+		last, lastName := 0.0, ""
+		for _, m := range []Metric{PodReady.P50, PodReady.P95, PodReady.P99, PodReady.Max} {
+			if b, ok := bound[m.Name]; ok {
+				if b < last {
+					errs = append(errs, fmt.Sprintf("provider %s sets %s %s < %g below %s < %g; quantile bounds must not decrease", p.Name, id, m.Name, b, lastName, last))
+				}
+				last, lastName = b, m.Name
+			}
+		}
+	}
 	sort.Strings(errs)
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))

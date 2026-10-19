@@ -36,10 +36,10 @@ type Metric struct {
 }
 
 var (
-	TotalTimeMinutes = Metric{Name: "total_time_minutes", Unit: "min", Upper: true,
-		Measures: "Wall time from the start of the phase (before the trigger) to its end state.",
+	TotalTimeSeconds = Metric{Name: "total_time_seconds", Unit: "s", Upper: true,
+		Measures: "Wall time of the whole phase, from its start (before the trigger) to its end state. For phases without a per-pod view (consolidation); pod-facing phases gate pod_ready_seconds instead.",
 		OnBreach: "The end state arrived later. With flat cpu_cores Karpenter is waiting (batching, NodeClaim launch, registration, API throttling); with higher cpu_cores it is computing more (scheduler Solve, disruption simulation).",
-		Value:    func(r *Result) float64 { return r.Total.Minutes() }}
+		Value:    func(r *Result) float64 { return r.Total.Seconds() }}
 	HeapMB = Metric{Name: "heap_mb", Unit: "MB", Upper: true,
 		Measures: "P95 of the leader's go_gc_heap_live_bytes, sampled every 2s.",
 		OnBreach: "Karpenter retains more per pod, node or NodePool (caches, cluster state, per-NodePool offerings). Diff the report's counters and latency_stats against the last green run.",
@@ -61,7 +61,7 @@ var (
 	// phase (it's still in the report as latency_stats). Cut for now because in 13 single runs a negative
 	// control (revert #2013) moved it +42%, as much as real regressions did, so it would flake. It needs
 	// repeated runs or base-vs-head on the same cluster before it can gate.
-	Metrics = []Metric{TotalTimeMinutes, PodReady.P50, PodReady.P95, PodReady.P99, PodReady.Max, HeapMB, CPUCores, StartupSeconds}
+	Metrics = []Metric{TotalTimeSeconds, PodReady.P50, PodReady.P95, PodReady.P99, PodReady.Max, HeapMB, CPUCores, StartupSeconds}
 )
 
 type QuantileMetrics struct {
