@@ -38,6 +38,7 @@ type Result struct {
 	Resources        ResourceStats `json:"resources"`
 	StartupSeconds   float64       `json:"startup_seconds,omitempty"`
 	StartupCPUSecond float64       `json:"startup_cpu_seconds,omitempty"`
+	PodReady         Quantiles     `json:"pod_ready_seconds"`
 
 	LatencyStats map[string]HistogramStats `json:"latency_stats,omitempty"`
 	Counters     map[string]uint64         `json:"counters,omitempty"`
@@ -45,4 +46,13 @@ type Result struct {
 
 	memProfile []byte
 	cpuProfile []byte
+}
+
+// Quantiles summarizes per-pod seconds from creation to Ready, over pods created during a phase.
+type Quantiles struct {
+	Count int     `json:"count"`
+	P50   float64 `json:"p50"`
+	P95   float64 `json:"p95"`
+	P99   float64 `json:"p99"`
+	Max   float64 `json:"max"`
 }

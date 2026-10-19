@@ -79,6 +79,7 @@ func (p *Phase) end(rep *Result, lastActivity time.Time) *Result {
 	res, hists, counters, err := p.src.stop(p.r.ctx)
 	Expect(err).ToNot(HaveOccurred())
 	Expect(res.Samples).To(BeNumerically(">", 1), "collected too few metrics samples to gate on")
+	rep.PodReady = p.r.podReadyQuantiles(p.start)
 	nodes := p.r.nodes()
 	rep.Resources, rep.LatencyStats, rep.Counters, rep.Commit = res, hists, counters, p.src.commit
 	rep.Nodes, rep.NodesNetChange = len(nodes), len(nodes)-p.initialNodes

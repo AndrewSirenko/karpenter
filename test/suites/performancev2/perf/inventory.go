@@ -134,6 +134,29 @@ func Inventory(p *Provider, scenarios []Scenario) (string, error) {
 			}
 		}
 	}
+	b.WriteString("\n## Pod latency by quantile (pod_ready_seconds)\n\n| scenario/phase | p50 | p95 | p99 | max (p100) |\n|---|---|---|---|---|\n")
+	for i := range scenarios {
+		s := &scenarios[i]
+		for _, ph := range s.Phases {
+			gates, ok := p.Levels[s.Name+"/"+ph.Name]
+			if !ok {
+				continue
+			}
+			cell := func(m Metric) string {
+				for _, g := range gates {
+					if g.Metric.Name == m.Name {
+						return fmt.Sprintf("%s < %g %s", g.Tier, g.Bound, m.Unit)
+					}
+				}
+				return "-"
+			}
+			row := []string{cell(PodReady.P50), cell(PodReady.P95), cell(PodReady.P99), cell(PodReady.Max)}
+			if strings.Join(row, "") == "----" {
+				continue
+			}
+			fmt.Fprintf(&b, "| %s/%s | %s |\n", s.Name, ph.Name, strings.Join(row, " | "))
+		}
+	}
 	b.WriteString("\n## Sweeps (measured only, never gate; run with KARPENTER_PERF_SWEEP=<scenario>)\n\n| scenario | grid | cells |\n|---|---|---|\n")
 	for i := range scenarios {
 		s := &scenarios[i]

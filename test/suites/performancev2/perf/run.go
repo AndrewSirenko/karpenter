@@ -20,8 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -237,6 +239,26 @@ func (r *Run) healthyPods() int {
 	return n
 }
 
+func (r *Run) podReadyQuantiles(since time.Time) Quantiles {
+	var secs []float64
+	for _, p := range r.scenarioPods() {
+		if p.CreationTimestamp.Time.Before(since.Truncate(time.Second)) || p.DeletionTimestamp != nil {
+			continue
+		}
+		for _, c := range p.Status.Conditions {
+			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+				secs = append(secs, c.LastTransitionTime.Sub(p.CreationTimestamp.Time).Seconds())
+			}
+		}
+	}
+	if len(secs) == 0 {
+		return Quantiles{}
+	}
+	sort.Float64s(secs)
+	at := func(q float64) float64 { return secs[int(math.Ceil(q*float64(len(secs))))-1] }
+	return Quantiles{Count: len(secs), P50: at(0.50), P95: at(0.95), P99: at(0.99), Max: secs[len(secs)-1]}
+}
+
 func podReady(p *corev1.Pod) bool {
 	for _, c := range p.Status.Conditions {
 		if c.Type == corev1.PodReady {
@@ -292,9 +314,9 @@ func (r *Run) finish(id string, gates []Gate, rep *Result) *Result {
 }
 
 func write(rep *Result) {
-	GinkgoWriter.Printf("perf %s [%s]: total=%s active=%s pods=%d nodes=%d heap_p95=%.1fMB cpu_avg=%.3f startup=%.1fs samples=%d\n",
+	GinkgoWriter.Printf("perf %s [%s]: total=%s active=%s pods=%d nodes=%d pod_ready_p95/p99/max=%.0f/%.0f/%.0fs heap_p95=%.1fMB cpu_avg=%.3f startup=%.1fs samples=%d\n",
 		rep.Phase, sizesLabel(rep.Sizes, "=", " "), rep.Total.Round(time.Second), rep.Active.Round(time.Second), rep.Pods, rep.Nodes,
-		rep.Resources.P95HeapMB, rep.Resources.AvgCPUCores, rep.StartupSeconds, rep.Resources.Samples)
+		rep.PodReady.P95, rep.PodReady.P99, rep.PodReady.Max, rep.Resources.P95HeapMB, rep.Resources.AvgCPUCores, rep.StartupSeconds, rep.Resources.Samples)
 	dir := os.Getenv("OUTPUT_DIR")
 	if dir == "" {
 		return

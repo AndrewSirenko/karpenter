@@ -53,12 +53,37 @@ var (
 		OnBreach: "Startup got slower: informer sync, cluster state sync, or a startup-time pass over every object. A crashloop here is an outage at scale.",
 		Value:    func(r *Result) float64 { return r.StartupSeconds }}
 
+	// PodReady is the per-pod view of latency: each quantile is its own metric, so a provider can gate p95
+	// and only warn on p99 and max, which are noisier but are what the slowest customer sees.
+	PodReady = podReadyMetrics()
+
 	// TODO: gate on scheduling latency, the mean of karpenter_scheduler_scheduling_duration_seconds over a
 	// phase (it's still in the report as latency_stats). Cut for now because in 13 single runs a negative
 	// control (revert #2013) moved it +42%, as much as real regressions did, so it would flake. It needs
 	// repeated runs or base-vs-head on the same cluster before it can gate.
-	Metrics = []Metric{TotalTimeMinutes, HeapMB, CPUCores, StartupSeconds}
+	Metrics = []Metric{TotalTimeMinutes, PodReady.P50, PodReady.P95, PodReady.P99, PodReady.Max, HeapMB, CPUCores, StartupSeconds}
 )
+
+type QuantileMetrics struct {
+	P50, P95, P99, Max Metric
+}
+
+func podReadyMetrics() QuantileMetrics {
+	q := func(name, label, onBreach string, v func(Quantiles) float64) Metric {
+		return Metric{Name: "pod_ready_seconds_" + name, Unit: "s", Upper: true,
+			Measures: label + " of seconds from a pod's creation to its Ready condition, over pods created during the phase.",
+			OnBreach: onBreach,
+			Value:    func(r *Result) float64 { return v(r.PodReady) }}
+	}
+	typical := "Most pods wait longer: a systemic slowdown in batching, scheduler Solve, NodeClaim launch or registration. Compare with cpu_cores: flat means waiting, higher means computing."
+	tail := "Some pods wait much longer than the rest: stragglers left for a later batch, a NodeClaim that launched late, or pods retried after a failed or incompatible scheduling decision. Noisier than p95, but it is the slowest customer's experience."
+	return QuantileMetrics{
+		P50: q("p50", "Median", typical, func(x Quantiles) float64 { return x.P50 }),
+		P95: q("p95", "P95", typical, func(x Quantiles) float64 { return x.P95 }),
+		P99: q("p99", "P99", tail, func(x Quantiles) float64 { return x.P99 }),
+		Max: q("max", "Max (p100)", tail, func(x Quantiles) float64 { return x.Max }),
+	}
+}
 
 // Tier decides what a breached gate does. Every new gate starts Experimental; a provider's owner
 // promotes it to Stable once it has held on main (see test/suites/performancev2/README.md).
