@@ -56,6 +56,7 @@ var _ = Describe("Options", func() {
 		"DISABLE_CONTROLLER_WARMUP",
 		"DISABLE_LEADER_ELECTION",
 		"DISABLE_CLUSTER_STATE_OBSERVABILITY",
+		"DISABLE_POD_NAME_METRIC_DIMENSION",
 		"LEADER_ELECTION_NAMESPACE",
 		"MEMORY_LIMIT",
 		"LOG_LEVEL",
@@ -113,6 +114,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(true),
 				DisableLeaderElection:            new(false),
 				DisableClusterStateObservability: new(false),
+				DisablePodNameMetricDimension:    new(false),
 				LeaderElectionName:               new("karpenter-leader-election"),
 				LeaderElectionNamespace:          new(""),
 				MemoryLimit:                      lo.ToPtr[int64](-1),
@@ -150,6 +152,7 @@ var _ = Describe("Options", func() {
 				"--disable-controller-warmup=false",
 				"--disable-leader-election=true",
 				"--disable-cluster-state-observability=true",
+				"--disable-pod-name-metric-dimension=true",
 				"--leader-election-name=karpenter-controller",
 				"--leader-election-namespace=karpenter",
 				"--memory-limit", "0",
@@ -174,6 +177,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisablePodNameMetricDimension:    new(true),
 				LeaderElectionName:               new("karpenter-controller"),
 				LeaderElectionNamespace:          new("karpenter"),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -215,6 +219,7 @@ var _ = Describe("Options", func() {
 			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
 			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
+			os.Setenv("DISABLE_POD_NAME_METRIC_DIMENSION", "true")
 			os.Setenv("LEADER_ELECTION_NAME", "karpenter-controller")
 			os.Setenv("LEADER_ELECTION_NAMESPACE", "karpenter")
 			os.Setenv("MEMORY_LIMIT", "0")
@@ -243,6 +248,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisablePodNameMetricDimension:    new(true),
 				LeaderElectionName:               new("karpenter-controller"),
 				LeaderElectionNamespace:          new("karpenter"),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -283,6 +289,7 @@ var _ = Describe("Options", func() {
 			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
 			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
+			os.Setenv("DISABLE_POD_NAME_METRIC_DIMENSION", "true")
 			os.Setenv("MEMORY_LIMIT", "0")
 			os.Setenv("LOG_LEVEL", "debug")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
@@ -313,6 +320,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisablePodNameMetricDimension:    new(true),
 				LeaderElectionName:               new("karpenter-leader-election"),
 				LeaderElectionNamespace:          new(""),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -586,6 +594,7 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.DisableControllerWarmup).To(Equal(optsB.DisableControllerWarmup))
 	Expect(optsA.DisableLeaderElection).To(Equal(optsB.DisableLeaderElection))
 	Expect(optsA.DisableClusterStateObservability).To(Equal(optsB.DisableClusterStateObservability))
+	Expect(optsA.DisablePodNameMetricDimension).To(Equal(optsB.DisablePodNameMetricDimension))
 	Expect(optsA.MemoryLimit).To(Equal(optsB.MemoryLimit))
 	Expect(optsA.LogLevel).To(Equal(optsB.LogLevel))
 	Expect(optsA.LogOutputPaths).To(Equal(optsB.LogOutputPaths))

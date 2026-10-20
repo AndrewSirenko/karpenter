@@ -184,6 +184,7 @@ type Options struct {
 	DisableControllerWarmup          bool
 	DisableLeaderElection            bool
 	DisableClusterStateObservability bool
+	DisablePodNameMetricDimension    bool
 	LeaderElectionName               string
 	LeaderElectionNamespace          string
 	MemoryLimit                      int64
@@ -231,6 +232,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.BoolVarWithEnv(&o.DisableControllerWarmup, "disable-controller-warmup", "DISABLE_CONTROLLER_WARMUP", true, "Disable controller warmup which starts controller sources before leader election is won. Controller warmup pre-populates caches and improves leader failover time.")
 	fs.BoolVarWithEnv(&o.DisableLeaderElection, "disable-leader-election", "DISABLE_LEADER_ELECTION", false, "Disable the leader election client before executing the main loop. Disable when running replicated components for high availability is not desired.")
 	fs.BoolVarWithEnv(&o.DisableClusterStateObservability, "disable-cluster-state-observability", "DISABLE_CLUSTER_STATE_OBSERVABILITY", false, "Disable cluster state metrics and events")
+	fs.BoolVarWithEnv(&o.DisablePodNameMetricDimension, "disable-pod-name-metric-dimension", "DISABLE_POD_NAME_METRIC_DIMENSION", false, "Drop the pod name dimension from pod metrics to bound their cardinality. karpenter_pods_state counts the pods sharing each remaining label set, and the per-pod karpenter_pods_*_time_seconds gauges are not emitted.")
 	fs.StringVar(&o.LeaderElectionName, "leader-election-name", env.WithDefaultString("LEADER_ELECTION_NAME", "karpenter-leader-election"), "Leader election name to create and monitor the lease if running outside the cluster")
 	fs.StringVar(&o.LeaderElectionNamespace, "leader-election-namespace", env.WithDefaultString("LEADER_ELECTION_NAMESPACE", ""), "Leader election namespace to create and monitor the lease if running outside the cluster")
 	fs.Int64Var(&o.MemoryLimit, "memory-limit", env.WithDefaultInt64("MEMORY_LIMIT", -1), "Memory limit on the container running the controller. The GC soft memory limit is set to 90% of this value.")
