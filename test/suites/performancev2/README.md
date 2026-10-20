@@ -9,19 +9,19 @@ The inventory prints every scenario, its sizes, each phase's level per metric, t
 ```
 | scenario | sizes | phase | metric | level | bound |
 |---|---|---|---|---|---|
-| pods | pods=1000 | scaleOut | pod_ready_seconds_p95 | experimental | < 18 s |
-| pods | pods=1000 | scaleOut | pod_ready_seconds_p99 | experimental | < 19 s |
-| pods | pods=1000 | scaleOut | pod_ready_seconds_max | stable | < 20 s |
+| pods | pods=1000 | scaleOut | pod_ready_seconds_p95 | stable | < 15 s |
+| pods | pods=1000 | scaleOut | pod_ready_seconds_p99 | stable | < 16 s |
+| pods | pods=1000 | scaleOut | pod_ready_seconds_max | experimental | < 17 s |
 | pods | pods=1000 | scaleOut | heap_mb | stable | < 70.2 MB |
 | pods | pods=1000 | scaleOut | cpu_cores | experimental | < 0.87 cores |
 | pods | pods=1000 | consolidation | heap_mb | experimental | < 84.4 MB |
 | pods | pods=1000 | consolidation | cpu_cores | experimental | < 0.24 cores |
-| pods | pods=1000 | consolidation | pod_ready_seconds_p95 | experimental | < 60 s |
-| pods | pods=1000 | consolidation | pod_ready_seconds_max | experimental | < 120 s |
+| pods | pods=1000 | consolidation | pod_ready_seconds_p95 | experimental | < 3 s |
+| pods | pods=1000 | consolidation | pod_ready_seconds_max | experimental | < 4 s |
 | nodepools | nodepools=1000 pods=100 | scheduling | heap_mb | experimental | < 97 MB |
 | nodepools | nodepools=1000 pods=100 | scheduling | cpu_cores | experimental | < 0.73 cores |
-| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_p95 | experimental | < 30 s |
-| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_max | experimental | < 60 s |
+| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_p95 | experimental | < 6 s |
+| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_max | experimental | < 6 s |
 | nodepools | nodepools=1000 pods=100 | startup | startup_seconds | experimental | < 23.8 s |
 | nodepools | nodepools=1000 pods=100 | startup | heap_mb | experimental | < 80 MB |
 | topology | pods=1000 | scaleOut | heap_mb | experimental | < 250 MB |
@@ -31,9 +31,9 @@ The inventory prints every scenario, its sizes, each phase's level per metric, t
 
 | scenario/phase | p50 | p95 | p99 | max (p100) |
 |---|---|---|---|---|
-| pods/scaleOut | - | experimental < 18 s | experimental < 19 s | stable < 20 s |
-| pods/consolidation | - | experimental < 60 s | - | experimental < 120 s |
-| nodepools/scheduling | - | experimental < 30 s | - | experimental < 60 s |
+| pods/scaleOut | - | stable < 15 s | stable < 16 s | experimental < 17 s |
+| pods/consolidation | - | experimental < 3 s | - | experimental < 4 s |
+| nodepools/scheduling | - | experimental < 6 s | - | experimental < 6 s |
 | topology/scaleOut | - | experimental < 120 s | - | experimental < 300 s |
 
 | scenario | grid | cells |

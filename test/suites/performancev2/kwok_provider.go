@@ -52,16 +52,17 @@ func KWOK(c env.Clients) *perf.Provider {
 			np.Spec.Disruption.Budgets = []v1.Budget{{Nodes: "100%"}}
 			return np
 		},
-		// Bounds are 1.1x the max of 5 baseline runs on the karpenter-perf-v2 EKS cluster (tier-xl, controller
+		// pod_ready bounds are 1.1x the max of 3 baselines, rounded up to whole seconds (pod timestamps have
+		// 1s resolution). Other bounds are 1.1x the max of 5 baseline runs on the karpenter-perf-v2 EKS cluster (tier-xl, controller
 		// 8 CPU / 24Gi), upstream main 6eac93ba. Stable where CV <= 20% and a planted regression breaches
 		// (see perf/regressions/README.md); everything else stays Experimental.
 		Levels: perf.Levels{
-			"pods/scaleOut": {perf.PodReady.P95.Experimental(18), perf.PodReady.P99.Experimental(19), perf.PodReady.Max.Stable(20),
+			"pods/scaleOut": {perf.PodReady.P95.Stable(15), perf.PodReady.P99.Stable(16), perf.PodReady.Max.Experimental(17),
 				perf.HeapMB.Stable(70.2), perf.CPUCores.Experimental(0.87)},
 			"pods/consolidation": {perf.HeapMB.Experimental(84.4), perf.CPUCores.Experimental(0.24),
-				perf.PodReady.P95.Experimental(60), perf.PodReady.Max.Experimental(120)},
+				perf.PodReady.P95.Experimental(3), perf.PodReady.Max.Experimental(4)},
 			"nodepools/scheduling": {perf.HeapMB.Experimental(97), perf.CPUCores.Experimental(0.73),
-				perf.PodReady.P95.Experimental(30), perf.PodReady.Max.Experimental(60)},
+				perf.PodReady.P95.Experimental(6), perf.PodReady.Max.Experimental(6)},
 			"nodepools/startup": {perf.StartupSeconds.Experimental(23.8), perf.HeapMB.Experimental(80)},
 			"topology/scaleOut": {perf.HeapMB.Experimental(250), perf.CPUCores.Experimental(1),
 				perf.PodReady.P95.Experimental(120), perf.PodReady.Max.Experimental(300)},
