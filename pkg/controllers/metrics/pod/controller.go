@@ -19,6 +19,7 @@ package pod
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	podutils "sigs.k8s.io/karpenter/pkg/utils/pod"
 )
 
@@ -90,7 +92,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: metrics.PodSubsystem,
 			Name:      "state",
-			Help:      "Pod state is the current state of pods. This metric can be used several ways as it is labeled by the pod name, namespace, owner, node, whether the pod is scheduled, nodepool name, zone, architecture, capacity type, instance type, pod phase, pod readiness, and whether the node is Karpenter-managed.",
+			Help:      "Pod state is the number of pods in each state. This metric can be used several ways as it is labeled by the pod name, namespace, owner, node, whether the pod is scheduled, nodepool name, zone, architecture, capacity type, instance type, pod phase, pod readiness, and whether the node is Karpenter-managed. The pod name is empty, and the value counts the pods sharing the other labels, when PodName is in --disable-high-cardinality-metrics.",
 		},
 		labelNames(),
 		opmetrics.Beta,
@@ -107,16 +109,19 @@ var (
 		[]opmetrics.Label{},
 		opmetrics.GA,
 	)
-	PodUnstartedTimeSeconds = opmetrics.NewPrometheusGauge(
-		crmetrics.Registry,
-		prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: metrics.PodSubsystem,
-			Name:      "unstarted_time_seconds",
-			Help:      "The time from pod creation until the pod is running.",
-		},
-		[]opmetrics.Label{podNameLabel, podNamespaceLabel},
-		opmetrics.Alpha,
+	PodUnstartedTimeSeconds = metrics.NewHighCardinalityGauge(
+		options.PodNameHighCardinalityMetric,
+		opmetrics.NewPrometheusGauge(
+			crmetrics.Registry,
+			prometheus.GaugeOpts{
+				Namespace: metrics.Namespace,
+				Subsystem: metrics.PodSubsystem,
+				Name:      "unstarted_time_seconds",
+				Help:      "The time from pod creation until the pod is running. Not emitted when PodName is in --disable-high-cardinality-metrics.",
+			},
+			[]opmetrics.Label{podNameLabel, podNamespaceLabel},
+			opmetrics.Alpha,
+		),
 	)
 	PodBoundDurationSeconds = opmetrics.NewPrometheusHistogram(
 		crmetrics.Registry,
@@ -130,16 +135,19 @@ var (
 		[]opmetrics.Label{podDynamicResourcesLabel},
 		opmetrics.Alpha,
 	)
-	PodUnboundTimeSeconds = opmetrics.NewPrometheusGauge(
-		crmetrics.Registry,
-		prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: metrics.PodSubsystem,
-			Name:      "unbound_time_seconds",
-			Help:      "The time from pod creation until the pod is bound.",
-		},
-		[]opmetrics.Label{podNameLabel, podNamespaceLabel, podDynamicResourcesLabel},
-		opmetrics.Alpha,
+	PodUnboundTimeSeconds = metrics.NewHighCardinalityGauge(
+		options.PodNameHighCardinalityMetric,
+		opmetrics.NewPrometheusGauge(
+			crmetrics.Registry,
+			prometheus.GaugeOpts{
+				Namespace: metrics.Namespace,
+				Subsystem: metrics.PodSubsystem,
+				Name:      "unbound_time_seconds",
+				Help:      "The time from pod creation until the pod is bound. Not emitted when PodName is in --disable-high-cardinality-metrics.",
+			},
+			[]opmetrics.Label{podNameLabel, podNamespaceLabel, podDynamicResourcesLabel},
+			opmetrics.Alpha,
+		),
 	)
 	// Stage: alpha
 	PodProvisioningBoundDurationSeconds = opmetrics.NewPrometheusHistogram(
@@ -155,16 +163,19 @@ var (
 		opmetrics.Alpha,
 	)
 	// Stage: alpha
-	PodProvisioningUnboundTimeSeconds = opmetrics.NewPrometheusGauge(
-		crmetrics.Registry,
-		prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: metrics.PodSubsystem,
-			Name:      "provisioning_unbound_time_seconds",
-			Help:      "The time from when Karpenter first thinks the pod can schedule until it binds. Note: this calculated from a point in memory, not by the pod creation timestamp.",
-		},
-		[]opmetrics.Label{podNameLabel, podNamespaceLabel, podDynamicResourcesLabel},
-		opmetrics.Alpha,
+	PodProvisioningUnboundTimeSeconds = metrics.NewHighCardinalityGauge(
+		options.PodNameHighCardinalityMetric,
+		opmetrics.NewPrometheusGauge(
+			crmetrics.Registry,
+			prometheus.GaugeOpts{
+				Namespace: metrics.Namespace,
+				Subsystem: metrics.PodSubsystem,
+				Name:      "provisioning_unbound_time_seconds",
+				Help:      "The time from when Karpenter first thinks the pod can schedule until it binds. Note: this calculated from a point in memory, not by the pod creation timestamp. Not emitted when PodName is in --disable-high-cardinality-metrics.",
+			},
+			[]opmetrics.Label{podNameLabel, podNamespaceLabel, podDynamicResourcesLabel},
+			opmetrics.Alpha,
+		),
 	)
 	// Stage: alpha
 	PodProvisioningStartupDurationSeconds = opmetrics.NewPrometheusHistogram(
@@ -180,36 +191,44 @@ var (
 		opmetrics.Alpha,
 	)
 	// Stage: alpha
-	PodProvisioningUnstartedTimeSeconds = opmetrics.NewPrometheusGauge(
-		crmetrics.Registry,
-		prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: metrics.PodSubsystem,
-			Name:      "provisioning_unstarted_time_seconds",
-			Help:      "The time from when Karpenter first thinks the pod can schedule until the pod is running. Note: this calculated from a point in memory, not by the pod creation timestamp.",
-		},
-		[]opmetrics.Label{podNameLabel, podNamespaceLabel},
-		opmetrics.Alpha,
+	PodProvisioningUnstartedTimeSeconds = metrics.NewHighCardinalityGauge(
+		options.PodNameHighCardinalityMetric,
+		opmetrics.NewPrometheusGauge(
+			crmetrics.Registry,
+			prometheus.GaugeOpts{
+				Namespace: metrics.Namespace,
+				Subsystem: metrics.PodSubsystem,
+				Name:      "provisioning_unstarted_time_seconds",
+				Help:      "The time from when Karpenter first thinks the pod can schedule until the pod is running. Note: this calculated from a point in memory, not by the pod creation timestamp. Not emitted when PodName is in --disable-high-cardinality-metrics.",
+			},
+			[]opmetrics.Label{podNameLabel, podNamespaceLabel},
+			opmetrics.Alpha,
+		),
 	)
 	// Stage: alpha
-	PodSchedulingUndecidedTimeSeconds = opmetrics.NewPrometheusGauge(
-		crmetrics.Registry,
-		prometheus.GaugeOpts{
-			Namespace: metrics.Namespace,
-			Subsystem: metrics.PodSubsystem,
-			Name:      "provisioning_scheduling_undecided_time_seconds",
-			Help:      "The time from when Karpenter has seen a pod without making a scheduling decision for the pod. Note: this calculated from a point in memory, not by the pod creation timestamp.",
-		},
-		[]opmetrics.Label{podNameLabel, podNamespaceLabel},
-		opmetrics.Alpha,
+	PodSchedulingUndecidedTimeSeconds = metrics.NewHighCardinalityGauge(
+		options.PodNameHighCardinalityMetric,
+		opmetrics.NewPrometheusGauge(
+			crmetrics.Registry,
+			prometheus.GaugeOpts{
+				Namespace: metrics.Namespace,
+				Subsystem: metrics.PodSubsystem,
+				Name:      "provisioning_scheduling_undecided_time_seconds",
+				Help:      "The time from when Karpenter has seen a pod without making a scheduling decision for the pod. Note: this calculated from a point in memory, not by the pod creation timestamp. Not emitted when PodName is in --disable-high-cardinality-metrics.",
+			},
+			[]opmetrics.Label{podNameLabel, podNamespaceLabel},
+			opmetrics.Alpha,
+		),
 	)
 )
 
 // Controller for the resource
 type Controller struct {
-	kubeClient  client.Client
-	metricStore *metrics.Store
-	cluster     *state.Cluster
+	kubeClient client.Client
+	cluster    *state.Cluster
+
+	podStateLabels map[string]prometheus.Labels
+	podStateCounts map[string]int
 
 	pendingPods     sets.Set[string]
 	unscheduledPods sets.Set[string]
@@ -237,7 +256,8 @@ func labelNames() []opmetrics.Label {
 func NewController(kubeClient client.Client, cluster *state.Cluster) *Controller {
 	return &Controller{
 		kubeClient:      kubeClient,
-		metricStore:     metrics.NewStore(),
+		podStateLabels:  map[string]prometheus.Labels{},
+		podStateCounts:  map[string]int{},
 		pendingPods:     sets.New[string](),
 		unscheduledPods: sets.New[string](),
 		cluster:         cluster,
@@ -275,7 +295,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				podName:      req.Name,
 				podNamespace: req.Namespace,
 			})
-			c.metricStore.Delete(req.String())
+			c.deletePodState(req.String())
 		}
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
@@ -283,13 +303,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	c.metricStore.Update(client.ObjectKeyFromObject(pod).String(), []*metrics.StoreMetric{
-		{
-			GaugeMetric: PodState,
-			Value:       1,
-			Labels:      labels,
-		},
-	})
+	c.updatePodState(client.ObjectKeyFromObject(pod).String(), labels)
 	c.recordPodSchedulingUndecidedMetric(pod)
 	// Get the time for when we Karpenter first thought the pod was schedulable. This should be zero if we didn't simulate for this pod.
 	schedulableTime := c.cluster.PodSchedulingSuccessTime(types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace})
@@ -320,6 +334,41 @@ func (c *Controller) recordPodSchedulingUndecidedMetric(pod *corev1.Pod) {
 		})
 		return
 	}
+}
+
+func (c *Controller) updatePodState(key string, labels prometheus.Labels) {
+	if old, ok := c.podStateLabels[key]; ok {
+		if maps.Equal(old, labels) {
+			return
+		}
+		c.decrementPodState(old)
+	}
+	c.podStateLabels[key] = labels
+	k := podStateKey(labels)
+	c.podStateCounts[k]++
+	PodState.Set(float64(c.podStateCounts[k]), labels)
+}
+
+func (c *Controller) deletePodState(key string) {
+	if old, ok := c.podStateLabels[key]; ok {
+		c.decrementPodState(old)
+		delete(c.podStateLabels, key)
+	}
+}
+
+func (c *Controller) decrementPodState(labels prometheus.Labels) {
+	k := podStateKey(labels)
+	c.podStateCounts[k]--
+	if c.podStateCounts[k] > 0 {
+		PodState.Set(float64(c.podStateCounts[k]), labels)
+		return
+	}
+	delete(c.podStateCounts, k)
+	PodState.Delete(labels)
+}
+
+func podStateKey(labels prometheus.Labels) string {
+	return strings.Join(lo.Map(labelNames(), func(l opmetrics.Label, _ int) string { return labels[l.Name] }), "\xff")
 }
 
 func (c *Controller) recordPodStartupMetric(pod *corev1.Pod, schedulableTime time.Time) {
@@ -458,7 +507,7 @@ func (c *Controller) recordPodBoundMetric(pod *corev1.Pod, schedulableTime time.
 // makeLabels creates the makeLabels using the current state of the pod
 func (c *Controller) makeLabels(ctx context.Context, pod *corev1.Pod) (prometheus.Labels, error) {
 	metricLabels := map[string]string{}
-	metricLabels[podName] = pod.Name
+	metricLabels[podName] = lo.Ternary(options.HighCardinalityMetricDisabled(options.PodNameHighCardinalityMetric), "", pod.Name)
 	metricLabels[podNamespace] = pod.Namespace
 	// Selflink has been deprecated after v.1.20
 	// Manually generate the selflink for the first owner reference

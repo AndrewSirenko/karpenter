@@ -24,8 +24,11 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -33,6 +36,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
 	"sigs.k8s.io/karpenter/pkg/controllers/metrics/pod"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	. "sigs.k8s.io/karpenter/pkg/utils/testing"
@@ -51,6 +55,7 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	ctx = options.ToContext(ctx, test.Options())
 	env = test.NewEnvironment()
 	cloudProvider = fake.NewCloudProvider()
 	cluster = state.NewCluster(env.Clock, env.Client, cloudProvider)
@@ -644,5 +649,89 @@ var _ = Describe("Pod Metrics", func() {
 			"namespace": p.GetNamespace(),
 		})
 		Expect(found).To(BeFalse())
+	})
+	Context("PodName High Cardinality Metric Disabled", func() {
+		var ns *corev1.Namespace
+		BeforeEach(func() {
+			options.SetDisabledHighCardinalityMetrics([]string{options.PodNameHighCardinalityMetric.Name})
+			ns = test.Namespace()
+			ExpectApplied(ctx, env.Client, ns)
+		})
+		AfterEach(func() {
+			options.SetDisabledHighCardinalityMetrics(nil)
+		})
+		It("should list every metric it changes", func() {
+			gauges := []opmetrics.GaugeMetric{
+				pod.PodState,
+				pod.PodUnstartedTimeSeconds,
+				pod.PodUnboundTimeSeconds,
+				pod.PodProvisioningUnstartedTimeSeconds,
+				pod.PodProvisioningUnboundTimeSeconds,
+				pod.PodSchedulingUndecidedTimeSeconds,
+			}
+			Expect(options.PodNameHighCardinalityMetric.Metrics).To(ConsistOf(lo.Map(gauges, func(g opmetrics.GaugeMetric, _ int) string {
+				return ExpectMetricName(g.(prometheus.Collector))
+			})))
+		})
+		It("should count pods that share a pod state series", func() {
+			p1 := test.Pod(test.PodOptions{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name}})
+			p2 := test.Pod(test.PodOptions{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name}})
+			ExpectApplied(ctx, env.Client, p1, p2)
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p1))
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p2))
+
+			ExpectMetricGaugeValue(pod.PodState, 2, map[string]string{"name": "", "namespace": ns.Name})
+			_, found := FindMetricWithLabelValues("karpenter_pods_state", map[string]string{"name": p1.Name})
+			Expect(found).To(BeFalse())
+
+			p1.Status.Phase = corev1.PodRunning
+			ExpectApplied(ctx, env.Client, p1)
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p1))
+			ExpectMetricGaugeValue(pod.PodState, 1, map[string]string{"name": "", "namespace": ns.Name, "phase": string(corev1.PodRunning)})
+			ExpectMetricGaugeValue(pod.PodState, 1, map[string]string{"name": "", "namespace": ns.Name, "phase": ""})
+
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p1))
+			ExpectMetricGaugeValue(pod.PodState, 1, map[string]string{"name": "", "namespace": ns.Name, "phase": string(corev1.PodRunning)})
+
+			ExpectDeleted(ctx, env.Client, p1, p2)
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p1))
+			_, found = FindMetricWithLabelValues("karpenter_pods_state", map[string]string{"namespace": ns.Name, "phase": string(corev1.PodRunning)})
+			Expect(found).To(BeFalse())
+			ExpectMetricGaugeValue(pod.PodState, 1, map[string]string{"name": "", "namespace": ns.Name, "phase": ""})
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p2))
+			_, found = FindMetricWithLabelValues("karpenter_pods_state", map[string]string{"namespace": ns.Name})
+			Expect(found).To(BeFalse())
+		})
+		It("should not emit the per-pod time metrics", func() {
+			p := test.Pod(test.PodOptions{ObjectMeta: metav1.ObjectMeta{Namespace: ns.Name}})
+			p.Status.Phase = corev1.PodPending
+			env.Clock.Step(1 * time.Hour)
+			cluster.AckPods(p)
+			cluster.MarkPodSchedulingDecisions(ctx, map[*corev1.Pod]error{}, map[string][]*corev1.Pod{"n1": {p}}, map[string][]*corev1.Pod{"nc1": {p}})
+			ExpectApplied(ctx, env.Client, p)
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p))
+
+			for _, name := range []string{
+				"karpenter_pods_unstarted_time_seconds",
+				"karpenter_pods_unbound_time_seconds",
+				"karpenter_pods_provisioning_unstarted_time_seconds",
+				"karpenter_pods_provisioning_unbound_time_seconds",
+				"karpenter_pods_provisioning_scheduling_undecided_time_seconds",
+			} {
+				_, found := FindMetricWithLabelValues(name, map[string]string{"namespace": ns.Name})
+				Expect(found).To(BeFalse(), name)
+			}
+
+			pod.PodStartupDurationSeconds.Reset()
+			p.Status.Phase = corev1.PodRunning
+			p.Status.Conditions = []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Now()},
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Now()},
+			}
+			ExpectApplied(ctx, env.Client, p)
+			ExpectReconcileSucceeded(ctx, podController, client.ObjectKeyFromObject(p))
+			_, found := FindMetricWithLabelValues("karpenter_pods_startup_duration_seconds", map[string]string{})
+			Expect(found).To(BeTrue())
+		})
 	})
 })

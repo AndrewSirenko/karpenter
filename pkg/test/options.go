@@ -51,6 +51,7 @@ type OptionsFields struct {
 	IgnoreDRARequests                *bool
 	LegacyNodeRepair                 *bool
 	FeatureGates                     FeatureGates
+	DisabledHighCardinalityMetrics   []string
 	SchedulerConfig                  *options.SchedulerConfiguration
 }
 
@@ -97,6 +98,7 @@ func Options(overrides ...OptionsFields) *options.Options {
 		IgnoreDRARequests:                lo.FromPtrOr(opts.IgnoreDRARequests, true),
 		LegacyNodeRepair:                 lo.FromPtrOr(opts.LegacyNodeRepair, false),
 		SchedulerConfig:                  opts.SchedulerConfig,
+		DisabledHighCardinalityMetrics:   lo.Ternary(opts.DisabledHighCardinalityMetrics == nil, []string{}, opts.DisabledHighCardinalityMetrics),
 		FeatureGates: options.FeatureGates{
 			NodeRepair:                lo.FromPtrOr(opts.FeatureGates.NodeRepair, options.NodeRepairFeatureGate.Default),
 			ReservedCapacity:          lo.FromPtrOr(opts.FeatureGates.ReservedCapacity, options.ReservedCapacityFeatureGate.Default),

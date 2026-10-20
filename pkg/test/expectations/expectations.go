@@ -909,7 +909,7 @@ func FindMetricWithLabelValues(name string, labelValues map[string]string) (*pro
 
 func ExpectMetricGaugeValue(collector opmetrics.GaugeMetric, expectedValue float64, labels map[string]string) {
 	GinkgoHelper()
-	metricName := ExpectMetricName(collector.(*opmetrics.PrometheusGauge))
+	metricName := ExpectMetricName(collector.(prometheus.Collector))
 	metric, ok := FindMetricWithLabelValues(metricName, labels)
 	Expect(ok).To(BeTrue(), "Metric "+metricName+" should be available")
 	Expect(lo.FromPtr(metric.Gauge.Value)).To(Equal(expectedValue), "Metric "+metricName+" should have the expected value")
