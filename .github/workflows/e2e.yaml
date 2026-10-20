@@ -16,6 +16,10 @@ on:
         type: string
         required: false
         description: "Human-readable test name for job identification"
+      cache_mutation_detector:
+        type: boolean
+        default: false
+        description: "Panic the controller if it mutates an informer cache object"
 jobs:
   e2e:
     permissions:
@@ -62,6 +66,7 @@ jobs:
         make install-kwok
         export KWOK_REPO=kind.local
         export KIND_CLUSTER_NAME=chart-testing
+        export CACHE_MUTATION_DETECTOR=${{ inputs.cache_mutation_detector }}
         make apply-with-kind
     - name: ping cluster
       shell: bash

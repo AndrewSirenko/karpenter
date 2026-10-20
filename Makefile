@@ -3,6 +3,7 @@ export KWOK_REPO ?= ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.co
 export KARPENTER_NAMESPACE=kube-system
 export KIND_CLUSTER_NAME ?= test-cluster
 
+CACHE_MUTATION_DETECTOR ?= false
 HELM_OPTS ?= --set logLevel=debug \
 			--set controller.resources.requests.cpu=1 \
 			--set controller.resources.requests.memory=1Gi \
@@ -42,7 +43,9 @@ apply-with-kind: verify build-with-kind ## Deploy the kwok controller from the c
 		--set controller.image.tag=$(IMG_TAG) \
 		--set serviceMonitor.enabled=true \
 		--set-string controller.env[0].name=ENABLE_PROFILING \
-		--set-string controller.env[0].value=true
+		--set-string controller.env[0].value=true \
+		--set-string controller.env[1].name=KUBE_CACHE_MUTATION_DETECTOR \
+		--set-string controller.env[1].value=$(CACHE_MUTATION_DETECTOR)
 
 apply-with-kind-dra: verify build-with-kind ## Deploy the kwok controller for DRA testing
 	kubectl apply -f kwok/charts/crds
