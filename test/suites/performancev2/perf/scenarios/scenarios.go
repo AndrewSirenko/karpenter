@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/test"
 	"sigs.k8s.io/karpenter/test/suites/performancev2/perf"
 )
@@ -100,9 +101,12 @@ var Topology = perf.Scenario{
 	},
 	Run: func(r *perf.Run) {
 		n := r.Size(perf.VectorPods)
-		anti := r.Deployment("anti", n/10, "900m", "3100Mi", test.WithPodAntiAffinityHostname())
-		zone := r.Deployment("zone", n*45/100, "900m", "3100Mi", test.WithZoneSpread())
-		host := r.Deployment("host", n-n/10-n*45/100, "900m", "3100Mi", test.WithHostnameSpread())
+		// Pin to the run's NodePool so topology spread only counts the run's nodes as domains; otherwise a real
+		// cluster's own nodes (in zones no KWOK instance type offers) become domains the pods can never reach.
+		own := test.WithNodeSelector(map[string]string{v1.NodePoolLabelKey: r.NodePool.Name})
+		anti := r.Deployment("anti", n/10, "900m", "3100Mi", own, test.WithPodAntiAffinityHostname())
+		zone := r.Deployment("zone", n*45/100, "900m", "3100Mi", own, test.WithZoneSpread())
+		host := r.Deployment("host", n-n/10-n*45/100, "900m", "3100Mi", own, test.WithHostnameSpread())
 
 		r.Create(r.NodeClass, r.NodePool)
 		r.AwaitNodePoolsReady(5 * time.Minute)
