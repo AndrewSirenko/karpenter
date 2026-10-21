@@ -19,14 +19,14 @@ package perf
 import "time"
 
 type Result struct {
-	Provider string        `json:"provider"`
-	Phase    string        `json:"phase"`
-	Vector   Vector        `json:"vector"`
-	Size     int           `json:"size"`
-	Kind     string        `json:"kind"`
-	Time     time.Time     `json:"timestamp"`
-	Total    time.Duration `json:"total_time"`
-	Active   time.Duration `json:"active_time"`
+	Provider string         `json:"provider"`
+	Phase    string         `json:"phase"`
+	Commit   string         `json:"commit"`
+	Sizes    map[Vector]int `json:"sizes"`
+	Kind     string         `json:"kind"`
+	Time     time.Time      `json:"timestamp"`
+	Total    time.Duration  `json:"total_time"`
+	Active   time.Duration  `json:"active_time"`
 
 	Pods           int `json:"pods"`
 	PodsNetChange  int `json:"pods_net_change"`
@@ -35,9 +35,13 @@ type Result struct {
 	PodsDisrupted  int `json:"pods_disrupted"`
 	Rounds         int `json:"rounds"`
 
+	ReservedCPUUtil    float64 `json:"reserved_cpu_utilization"`
+	ReservedMemoryUtil float64 `json:"reserved_memory_utilization"`
+
 	Resources        ResourceStats `json:"resources"`
 	StartupSeconds   float64       `json:"startup_seconds,omitempty"`
 	StartupCPUSecond float64       `json:"startup_cpu_seconds,omitempty"`
+	PodReady         Quantiles     `json:"pod_ready_seconds"`
 
 	LatencyStats map[string]HistogramStats `json:"latency_stats,omitempty"`
 	Counters     map[string]uint64         `json:"counters,omitempty"`
@@ -45,4 +49,13 @@ type Result struct {
 
 	memProfile []byte
 	cpuProfile []byte
+}
+
+// Quantiles summarizes per-pod seconds from creation to Ready, over pods created during a phase.
+type Quantiles struct {
+	Count int     `json:"count"`
+	P50   float64 `json:"p50"`
+	P95   float64 `json:"p95"`
+	P99   float64 `json:"p99"`
+	Max   float64 `json:"max"`
 }

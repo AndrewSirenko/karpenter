@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-
 // inventory prints what the core KWOK provider runs in performancev2, generated from the same scenarios
 // and levels the suite uses. It needs no cluster.
 package main
