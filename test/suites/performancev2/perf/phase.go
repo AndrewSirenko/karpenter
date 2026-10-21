@@ -83,6 +83,7 @@ func (p *Phase) end(rep *Result, lastActivity time.Time) *Result {
 	nodes := p.r.nodes()
 	rep.Resources, rep.LatencyStats, rep.Counters, rep.Commit = res, hists, counters, p.src.commit
 	rep.Nodes, rep.NodesNetChange = len(nodes), len(nodes)-p.initialNodes
+	rep.ReservedCPUUtil, rep.ReservedMemoryUtil = p.r.reserved()
 	for k, v := range counters {
 		if strings.HasPrefix(k, "karpenter_pods_drained_total") {
 			rep.PodsDisrupted += int(v)

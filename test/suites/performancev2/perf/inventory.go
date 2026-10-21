@@ -51,10 +51,12 @@ func Validate(p *Provider, scenarios []Scenario) error {
 		for _, g := range gates {
 			bound[g.Metric.Name] = g.Bound
 		}
-		if _, ok := bound[TotalTimeSeconds.Name]; ok {
-			if _, ok := bound[PodReady.Max.Name]; ok {
-				errs = append(errs, fmt.Sprintf("provider %s gates %s on both %s and %s, which measure nearly the same thing; keep one", p.Name, id, TotalTimeSeconds.Name, PodReady.Max.Name))
-			}
+		stable := map[string]bool{}
+		for _, g := range gates {
+			stable[g.Metric.Name] = stable[g.Metric.Name] || g.Tier == TierStable
+		}
+		if stable[TotalTimeSeconds.Name] && stable[PodReady.Max.Name] {
+			errs = append(errs, fmt.Sprintf("provider %s makes both %s and %s Stable on %s; they measure nearly the same thing, so at most one should block", p.Name, TotalTimeSeconds.Name, PodReady.Max.Name, id))
 		}
 		last, lastName := 0.0, ""
 		for _, m := range []Metric{PodReady.P50, PodReady.P95, PodReady.P99, PodReady.Max} {
@@ -126,34 +128,96 @@ func cells(grid map[Vector][]int) []map[Vector]int {
 	return out
 }
 
-// Inventory renders what a provider runs: every scenario and phase with its level per metric, the sweep
-// grids, and what each metric means. It is generated from the same values the suite uses.
+// CheckEvidence enforces the promotion rules on Stable gates against the provider's calibration: enough
+// baseline runs, a low CV, and at least one planted regression that breaches the bound.
+func CheckEvidence(p *Provider) error {
+	var errs []string
+	for id, gates := range p.Levels {
+		for _, g := range gates {
+			if g.Tier != TierStable {
+				continue
+			}
+			e, ok := p.Calibration.evidence(id, g.Metric.Name)
+			switch {
+			case !ok:
+				errs = append(errs, fmt.Sprintf("%s %s is Stable with no calibration evidence", id, g.Metric.Name))
+			case e.N < StableMinRuns:
+				errs = append(errs, fmt.Sprintf("%s %s is Stable on %d baseline runs; needs %d", id, g.Metric.Name, e.N, StableMinRuns))
+			case e.CV > StableMaxCV:
+				errs = append(errs, fmt.Sprintf("%s %s is Stable with CV %.0f%%; needs <= %.0f%%", id, g.Metric.Name, e.CV*100, StableMaxCV*100))
+			case len(e.catches(g.Metric, g.Bound)) == 0:
+				errs = append(errs, fmt.Sprintf("%s %s is Stable but no planted regression breaches %g", id, g.Metric.Name, g.Bound))
+			}
+		}
+	}
+	sort.Strings(errs)
+	if len(errs) > 0 {
+		return fmt.Errorf("evidence: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// Inventory renders what a provider runs: every phase's gated and measured metrics with the calibration
+// evidence behind each bound, the sweep grids, and what each metric means. It is generated from the same
+// values the suite uses.
 func Inventory(p *Provider, scenarios []Scenario) (string, error) {
 	if err := Validate(p, scenarios); err != nil {
 		return "", err
 	}
+	if err := CheckEvidence(p); err != nil {
+		return "", err
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Provider %s\n\n| scenario | sizes | phase | metric | level | bound |\n|---|---|---|---|---|---|\n", p.Name)
+	fmt.Fprintf(&b, "## Provider %s\n\n", p.Name)
+	if c := p.Calibration; c != nil && c.Source != "" {
+		fmt.Fprintf(&b, "Calibration: %s, baseline %s, generated %s.\n\n", c.Source, c.Baseline, c.Generated.Format("2006-01-02"))
+	}
+	b.WriteString("| phase | kind | metric | level | bound | n | median | CV | headroom | catches |\n|---|---|---|---|---|---|---|---|---|---|\n")
 	for i := range scenarios {
 		s := &scenarios[i]
-		sz := sizesLabel(p.sizes(s), "=", " ")
 		for _, ph := range s.Phases {
-			gates, ok := p.Levels[s.Name+"/"+ph.Name]
-			switch {
-			case !ok:
-				fmt.Fprintf(&b, "| %s | %s | %s | - | off | - |\n", s.Name, sz, ph.Name)
-			case len(gates) == 0:
-				fmt.Fprintf(&b, "| %s | %s | %s | - | measured only | - |\n", s.Name, sz, ph.Name)
+			id := s.Name + "/" + ph.Name
+			gates, enabled := p.Levels[id]
+			if !enabled {
+				fmt.Fprintf(&b, "| %s | - | - | off | - | | | | | |\n", id)
+				continue
 			}
+			byMetric := map[string]Gate{}
 			for _, g := range gates {
-				op := ">"
-				if g.Metric.Upper {
-					op = "<"
+				byMetric[g.Metric.Name] = g
+			}
+			for _, kind := range []Kind{KindDuration, KindOutcome, KindResource} {
+				for _, m := range Metrics {
+					if m.Kind != kind {
+						continue
+					}
+					g, gated := byMetric[m.Name]
+					e, measured := p.Calibration.evidence(id, m.Name)
+					if !gated && !measured {
+						continue
+					}
+					level, bound, head, catches := "measured", "-", "", ""
+					if gated {
+						op := ">"
+						if m.Upper {
+							op = "<"
+						}
+						level, bound = string(g.Tier), fmt.Sprintf("%s %g %s", op, g.Bound, m.Unit)
+					}
+					n, med, cv := "", "", ""
+					if measured {
+						n, med, cv = fmt.Sprint(e.N), fmt.Sprintf("%g", e.Median), fmt.Sprintf("%.0f%%", e.CV*100)
+						if gated {
+							head = fmt.Sprintf("%.2fx", e.headroom(m, g.Bound))
+							catches = strings.Join(e.catches(m, g.Bound), ", ")
+						}
+					}
+					fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", id, kind, m.Name, level, bound, n, med, cv, head, catches)
 				}
-				fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s %g %s |\n", s.Name, sz, ph.Name, g.Metric.Name, g.Tier, op, g.Bound, g.Metric.Unit)
 			}
 		}
 	}
+	fmt.Fprintf(&b, "\nStable needs n >= %d, CV <= %.0f%% and at least one catch. Headroom is how far the median sits from the bound: the smallest regression the gate can see.\n", StableMinRuns, StableMaxCV*100)
 	b.WriteString("\n## Pod latency by quantile (pod_ready_seconds)\n\n| scenario/phase | p50 | p95 | p99 | max (p100) |\n|---|---|---|---|---|\n")
 	for i := range scenarios {
 		s := &scenarios[i]

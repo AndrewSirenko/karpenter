@@ -35,14 +35,15 @@ import (
 // Provider is the plugin a KWOK-based Karpenter distribution implements to run the shared scenarios.
 // A scenario runs only if Levels has an entry for at least one of its phases; anything else is Off.
 type Provider struct {
-	Name       string
-	Client     client.Client
-	KubeClient kubernetes.Interface
-	Controller Controller
-	NodeClass  func() client.Object
-	NodePool   func(nodeClass client.Object) *v1.NodePool
-	Sizes      map[string]map[Vector]int
-	Levels     Levels
+	Name        string
+	Client      client.Client
+	KubeClient  kubernetes.Interface
+	Controller  Controller
+	NodeClass   func() client.Object
+	NodePool    func(nodeClass client.Object) *v1.NodePool
+	Sizes       map[string]map[Vector]int
+	Levels      Levels
+	Calibration *Calibration
 }
 
 // Controller locates the Karpenter pod whose /metrics the suite scrapes through the API server proxy.

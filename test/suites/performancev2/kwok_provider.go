@@ -17,6 +17,8 @@ limitations under the License.
 package performancev2
 
 import (
+	_ "embed"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +29,9 @@ import (
 	"sigs.k8s.io/karpenter/test/suites/performancev2/env"
 	"sigs.k8s.io/karpenter/test/suites/performancev2/perf"
 )
+
+//go:embed calibration/kwok.json
+var kwokCalibration []byte
 
 // KWOK is the core KWOK provider's plugin: how to reach the controller, which NodeClass and
 // NodePool to start from, how big each vector is, and the level of every phase it runs.
@@ -56,6 +61,7 @@ func KWOK(c env.Clients) *perf.Provider {
 		// 1s resolution). Other bounds are 1.1x the max of 5 baseline runs on the karpenter-perf-v2 EKS cluster (tier-xl, controller
 		// 8 CPU / 24Gi), upstream main 6eac93ba. Stable where CV <= 20% and a planted regression breaches
 		// (see perf/regressions/README.md); everything else stays Experimental.
+		Calibration: perf.MustLoadCalibration(kwokCalibration),
 		Levels: perf.Levels{
 			"pods/scaleOut": {perf.PodReady.P95.Stable(15), perf.PodReady.P99.Stable(16), perf.PodReady.Max.Experimental(17),
 				perf.HeapMB.Stable(70.2), perf.CPUCores.Experimental(0.87)},

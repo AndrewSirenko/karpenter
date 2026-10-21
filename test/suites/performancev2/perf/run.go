@@ -292,6 +292,34 @@ func hasTaint(n *corev1.Node, key string) bool {
 	return false
 }
 
+func (r *Run) reserved() (cpu, memory float64) {
+	var allocCPU, allocMem, reqCPU, reqMem int64
+	nodes := sets.New[string]()
+	for _, n := range r.nodes() {
+		allocCPU += n.Status.Allocatable.Cpu().MilliValue()
+		allocMem += n.Status.Allocatable.Memory().Value()
+		nodes.Insert(n.Name)
+	}
+	pods := &corev1.PodList{}
+	Expect(r.Provider.Client.List(r.ctx, pods)).To(Succeed())
+	for _, p := range pods.Items {
+		if !nodes.Has(p.Spec.NodeName) || p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		for _, c := range p.Spec.Containers {
+			reqCPU += c.Resources.Requests.Cpu().MilliValue()
+			reqMem += c.Resources.Requests.Memory().Value()
+		}
+	}
+	if allocCPU > 0 {
+		cpu = float64(reqCPU) / float64(allocCPU)
+	}
+	if allocMem > 0 {
+		memory = float64(reqMem) / float64(allocMem)
+	}
+	return cpu, memory
+}
+
 func (r *Run) phaseID(name string) (string, []Gate) {
 	GinkgoHelper()
 	id := r.Scenario.Name + "/" + name

@@ -35,6 +35,9 @@ type Result struct {
 	PodsDisrupted  int `json:"pods_disrupted"`
 	Rounds         int `json:"rounds"`
 
+	ReservedCPUUtil    float64 `json:"reserved_cpu_utilization"`
+	ReservedMemoryUtil float64 `json:"reserved_memory_utilization"`
+
 	Resources        ResourceStats `json:"resources"`
 	StartupSeconds   float64       `json:"startup_seconds,omitempty"`
 	StartupCPUSecond float64       `json:"startup_cpu_seconds,omitempty"`
