@@ -57,21 +57,32 @@ func KWOK(c env.Clients) *perf.Provider {
 			np.Spec.Disruption.Budgets = []v1.Budget{{Nodes: "100%"}}
 			return np
 		},
-		// pod_ready bounds are 1.1x the max of 3 baselines, rounded up to whole seconds (pod timestamps have
-		// 1s resolution). Other bounds are 1.1x the max of 5 baseline runs on the karpenter-perf-v2 EKS cluster (tier-xl, controller
-		// 8 CPU / 24Gi), upstream main 6eac93ba. Stable where CV <= 20% and a planted regression breaches
-		// (see perf/regressions/README.md); everything else stays Experimental.
+		// Bounds follow calibration/kwok.json (make perf-calibrate): 1.1x the baseline max (0.9x the min for
+		// utilization), pod_ready rounded up to whole seconds. Stable only where make perf-inventory's evidence
+		// check passes.
 		Calibration: perf.MustLoadCalibration(kwokCalibration),
 		Levels: perf.Levels{
-			"pods/scaleOut": {perf.PodReady.P95.Stable(15), perf.PodReady.P99.Stable(16), perf.PodReady.Max.Experimental(17),
-				perf.HeapMB.Stable(70.2), perf.CPUCores.Experimental(0.87)},
-			"pods/consolidation": {perf.HeapMB.Experimental(84.4), perf.CPUCores.Experimental(0.24),
-				perf.PodReady.P95.Experimental(3), perf.PodReady.Max.Experimental(4)},
-			"nodepools/scheduling": {perf.HeapMB.Experimental(97), perf.CPUCores.Experimental(0.73),
-				perf.PodReady.P95.Experimental(6), perf.PodReady.Max.Experimental(6)},
-			"nodepools/startup": {perf.StartupSeconds.Experimental(23.8), perf.HeapMB.Experimental(80)},
-			"topology/scaleOut": {perf.HeapMB.Experimental(250), perf.CPUCores.Experimental(1),
-				perf.PodReady.P95.Experimental(120), perf.PodReady.Max.Experimental(300)},
+			"pods/scaleOut": {
+				perf.PodReady.P95.Stable(16), perf.PodReady.P99.Stable(18), perf.PodReady.Max.Experimental(19),
+				perf.CPUUtil.Experimental(0.759), perf.MemoryUtil.Experimental(0.713), perf.Nodes.Experimental(182),
+				perf.HeapMB.Stable(75.5), perf.CPUCores.Experimental(0.87),
+			},
+			"pods/consolidation": {
+				perf.TotalTimeSeconds.Experimental(1102), perf.PodReady.P95.Experimental(3), perf.PodReady.P99.Experimental(4), perf.PodReady.Max.Experimental(4),
+				perf.CPUUtil.Experimental(0.879), perf.MemoryUtil.Experimental(0.782), perf.Nodes.Experimental(140), perf.PodsDisrupted.Experimental(448),
+				perf.HeapMB.Experimental(80.9), perf.CPUCores.Experimental(0.232),
+			},
+			"nodepools/scheduling": {
+				perf.TotalTimeSeconds.Stable(5), perf.PodReady.P95.Experimental(5), perf.PodReady.Max.Experimental(5),
+				perf.HeapMB.Experimental(101), perf.CPUCores.Experimental(0.88),
+			},
+			"nodepools/startup": {
+				perf.StartupSeconds.Experimental(25.6), perf.HeapMB.Experimental(75.5),
+			},
+			"topology/scaleOut": {
+				perf.PodReady.P95.Experimental(37), perf.PodReady.P99.Experimental(38), perf.PodReady.Max.Experimental(39),
+				perf.Nodes.Experimental(777), perf.HeapMB.Experimental(237), perf.CPUCores.Experimental(1.15),
+			},
 		},
 	}
 }

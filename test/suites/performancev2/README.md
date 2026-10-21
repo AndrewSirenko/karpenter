@@ -4,42 +4,38 @@ A self-contained, plugin-style perf suite. Shared scenarios live in `perf/scenar
 
 ## Audit it: `make perf-inventory`
 
-The inventory prints every scenario, its sizes, each phase's level per metric, the sweep grids, and what every metric means. It's generated from the same values the suite runs, and needs no cluster. A level that names an undeclared phase makes it, and every spec, fail.
+The inventory prints every phase's gated and measured metrics, grouped by kind (duration, outcome, resource). Each bound comes with the calibration evidence behind it. It's generated from the same values the suite runs, plus the checked-in `calibration/<provider>.json`, and it needs no cluster.
+
+The command fails in two cases:
+- A level names an undeclared phase.
+- A Stable gate lacks evidence: it needs at least 3 baseline runs, a CV of at most 20%, and at least one planted regression that breaches it.
 
 ```
-| scenario | sizes | phase | metric | level | bound |
-|---|---|---|---|---|---|
-| pods | pods=1000 | scaleOut | pod_ready_seconds_p95 | stable | < 15 s |
-| pods | pods=1000 | scaleOut | pod_ready_seconds_p99 | stable | < 16 s |
-| pods | pods=1000 | scaleOut | pod_ready_seconds_max | experimental | < 17 s |
-| pods | pods=1000 | scaleOut | heap_mb | stable | < 70.2 MB |
-| pods | pods=1000 | scaleOut | cpu_cores | experimental | < 0.87 cores |
-| pods | pods=1000 | consolidation | heap_mb | experimental | < 84.4 MB |
-| pods | pods=1000 | consolidation | cpu_cores | experimental | < 0.24 cores |
-| pods | pods=1000 | consolidation | pod_ready_seconds_p95 | experimental | < 3 s |
-| pods | pods=1000 | consolidation | pod_ready_seconds_max | experimental | < 4 s |
-| nodepools | nodepools=1000 pods=100 | scheduling | heap_mb | experimental | < 97 MB |
-| nodepools | nodepools=1000 pods=100 | scheduling | cpu_cores | experimental | < 0.73 cores |
-| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_p95 | experimental | < 6 s |
-| nodepools | nodepools=1000 pods=100 | scheduling | pod_ready_seconds_max | experimental | < 6 s |
-| nodepools | nodepools=1000 pods=100 | startup | startup_seconds | experimental | < 23.8 s |
-| nodepools | nodepools=1000 pods=100 | startup | heap_mb | experimental | < 80 MB |
-| topology | pods=1000 | scaleOut | heap_mb | experimental | < 250 MB |
-| topology | pods=1000 | scaleOut | cpu_cores | experimental | < 1 cores |
-| topology | pods=1000 | scaleOut | pod_ready_seconds_p95 | experimental | < 120 s |
-| topology | pods=1000 | scaleOut | pod_ready_seconds_max | experimental | < 300 s |
+| phase | kind | metric | level | bound | n | median | CV | headroom | catches |
+|---|---|---|---|---|---|---|---|---|---|
+| pods/scaleOut | duration | total_time_seconds | measured | - | 5 | 17.501 | 7% |  |  |
+| pods/scaleOut | duration | pod_ready_seconds_p50 | measured | - | 5 | 9 | 6% |  |  |
+| pods/scaleOut | duration | pod_ready_seconds_p95 | stable | < 16 s | 5 | 14 | 12% | 1.14x | mconc1 (+2079%) |
+| pods/scaleOut | duration | pod_ready_seconds_p99 | stable | < 18 s | 5 | 14 | 7% | 1.29x | mconc1 (+2264%) |
+| pods/scaleOut | duration | pod_ready_seconds_max | experimental | < 19 s | 5 | 16 | 7% | 1.19x | mconc1 (+1981%) |
+| pods/scaleOut | outcome | cpu_util | experimental | > 0.759 fraction | 5 | 0.878 | 2% | 1.16x |  |
+| pods/scaleOut | outcome | memory_util | experimental | > 0.713 fraction | 5 | 0.827 | 2% | 1.16x |  |
+| pods/scaleOut | outcome | nodes | experimental | < 182 nodes | 5 | 159 | 2% | 1.14x |  |
+| pods/scaleOut | resource | heap_mb | stable | < 75.5 MB | 5 | 65.375 | 4% | 1.15x | rv3211 (+24%) |
+| pods/scaleOut | resource | cpu_cores | experimental | < 0.87 cores | 5 | 0.722 | 6% | 1.20x |  |
+| nodepools/scheduling | duration | total_time_seconds | stable | < 5 s | 5 | 4.37 | 2% | 1.14x | mconc1 (+283%) |
+...
 
-| scenario/phase | p50 | p95 | p99 | max (p100) |
-|---|---|---|---|---|
-| pods/scaleOut | - | stable < 15 s | stable < 16 s | experimental < 17 s |
-| pods/consolidation | - | experimental < 3 s | - | experimental < 4 s |
-| nodepools/scheduling | - | experimental < 6 s | - | experimental < 6 s |
-| topology/scaleOut | - | experimental < 120 s | - | experimental < 300 s |
-
-| scenario | grid | cells |
-|---|---|---|
-| nodepools | nodepools [1 10 100 1000 10000] x pods [100 1000 5000] | 15 |
+Stable needs n >= 3, CV <= 20% and at least one catch. Headroom is how far the median sits from the bound: the smallest regression the gate can see.
 ```
+
+To recalibrate, put baselines in `base-*/` and regressions in `<patch>/` directories, then run:
+
+```sh
+make perf-calibrate DIR=runs/ SOURCE="cluster, controller size"   # rewrites calibration/kwok.json
+```
+
+Headroom is the median's distance from the bound, which is the smallest regression the gate can see. `catches` are the planted regressions that breach the bound, with their change from the baseline median.
 
 ## Concepts
 
