@@ -1,0 +1,20 @@
+name: perf-ci-calib
+on:
+  push:
+    branches: [perf-ci-calib]
+jobs:
+  calib:
+    permissions:
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ["pods", "nodepools", "topology"]
+        variant: ["base-1", "base-2", "base-3", "base-4", "base-5", "mconc1", "mconc1-2", "rv2013"]
+    uses: ./.github/workflows/e2e.yaml
+    with:
+      suite: Performancev2
+      focus: ${{ matrix.scenario }}
+      test_name: calib ${{ matrix.scenario }} ${{ matrix.variant }}
+      perf_env: KARPENTER_PERF_PROVIDER=kwok-ci
+      regression: ${{ startsWith(matrix.variant, 'base') && '' || (startsWith(matrix.variant, 'mconc1') && 'mconc1' || matrix.variant) }}
