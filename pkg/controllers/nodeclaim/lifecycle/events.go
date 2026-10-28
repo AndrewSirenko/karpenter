@@ -18,6 +18,7 @@ package lifecycle
 
 import (
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/util/flowcontrol"
@@ -57,6 +58,16 @@ func NodeClassNotReadyEvent(nodeClaim *v1.NodeClaim, err error) events.Event {
 		Type:           corev1.EventTypeWarning,
 		Reason:         events.NodeClassNotReady,
 		Message:        truncateMessage(fmt.Sprintf("NodeClaim %s event: %s", nodeClaim.Name, err.Error())),
+		DedupeValues:   []string{string(nodeClaim.UID)},
+	}
+}
+
+func InitializationTimeoutEvent(nodeClaim *v1.NodeClaim, timeout time.Duration, reason, message string) events.Event {
+	return events.Event{
+		InvolvedObject: nodeClaim,
+		Type:           corev1.EventTypeWarning,
+		Reason:         events.InitializationTimeout,
+		Message:        truncateMessage(fmt.Sprintf("Node did not initialize within %s, replacing NodeClaim (last reason %s: %s)", timeout, reason, message)),
 		DedupeValues:   []string{string(nodeClaim.UID)},
 	}
 }
