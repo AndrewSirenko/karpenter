@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/clock"
 
 	. "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/test"
@@ -213,6 +214,35 @@ var _ = Describe("CEL/Validation", func() {
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+		})
+		It("should fail when creating a budget with a special cased cron that has a suffix", func() {
+			nodePool.Spec.Disruption.Budgets = []Budget{{
+				Nodes:    "10",
+				Schedule: new("@hourlyjunk"),
+				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
+			}}
+			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+		})
+		It("should fail when creating a schedule with more than 5 entries", func() {
+			for _, schedule := range []string{"0 0 9 * * *", "TZ=America/New_York 0 9 * * *", "CRON_TZ=UTC 0 9 * * *"} {
+				nodePool.Spec.Disruption.Budgets = []Budget{{
+					Nodes:    "10",
+					Schedule: new(schedule),
+					Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
+				}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+			}
+		})
+		It("should succeed when creating a schedule with extra whitespace", func() {
+			nodePool.Spec.Disruption.Budgets = []Budget{
+				{Nodes: "10", Schedule: new(" 0  9 * *\tmon-fri "), Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))}},
+				{Nodes: "10", Schedule: new(" @daily "), Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))}},
+			}
+			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
+			for _, budget := range nodePool.Spec.Disruption.Budgets {
+				_, err := budget.IsActive(clock.RealClock{})
+				Expect(err).ToNot(HaveOccurred())
+			}
 		})
 		It("should fail when creating a budget with a negative duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{

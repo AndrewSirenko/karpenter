@@ -141,7 +141,7 @@ type Budget struct {
 	// the upstream cronjob syntax. If omitted, the budget is always active.
 	// Timezones are not supported.
 	// This field is required if Duration is set.
-	// +kubebuilder:validation:Pattern:=`^(@(annually|yearly|monthly|weekly|daily|midnight|hourly))|((.+)\s(.+)\s(.+)\s(.+)\s(.+))$`
+	// +kubebuilder:validation:Pattern:=`^\s*(@(annually|yearly|monthly|weekly|daily|midnight|hourly)|\S+(\s+\S+){4})\s*$`
 	// +optional
 	Schedule *string `json:"schedule,omitempty" hash:"ignore"`
 	//nolint:kubeapilinter

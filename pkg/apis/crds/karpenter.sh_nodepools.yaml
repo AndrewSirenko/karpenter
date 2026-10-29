@@ -132,7 +132,7 @@ spec:
                               the upstream cronjob syntax. If omitted, the budget is always active.
                               Timezones are not supported.
                               This field is required if Duration is set.
-                            pattern: ^(@(annually|yearly|monthly|weekly|daily|midnight|hourly))|((.+)\s(.+)\s(.+)\s(.+)\s(.+))$
+                            pattern: ^\s*(@(annually|yearly|monthly|weekly|daily|midnight|hourly)|\S+(\s+\S+){4})\s*$
                             type: string
                         required:
                           - nodes
