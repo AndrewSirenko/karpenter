@@ -18,6 +18,7 @@ package v1_test
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/awslabs/operatorpkg/object"
 	. "github.com/onsi/ginkgo/v2"
@@ -86,6 +87,21 @@ var _ = Describe("Validation", func() {
 			nodeClaim.Spec.Taints = []v1.Taint{{Key: "invalid-effect", Effect: "???"}}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
 		})
+		It("should succeed for taint values that are valid label values", func() {
+			nodeClaim.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: "A-b_c.1"}}
+			nodeClaim.Spec.StartupTaints = []v1.Taint{{Key: "b", Effect: v1.TaintEffectNoSchedule, Value: strings.Repeat("a", 63)}}
+			Expect(env.Client.Create(ctx, nodeClaim)).To(Succeed())
+		})
+		It("should fail for taint values that are not valid label values", func() {
+			for _, value := range []string{"example.com/gpu", "a/b", strings.Repeat("a", 64)} {
+				nodeClaim.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				nodeClaim.Spec.StartupTaints = nil
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+				nodeClaim.Spec.Taints = nil
+				nodeClaim.Spec.StartupTaints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+			}
+		})
 		It("should not fail for same key with different effects", func() {
 			nodeClaim.Spec.Taints = []v1.Taint{
 				{Key: "a", Effect: v1.TaintEffectNoSchedule},
@@ -118,10 +134,18 @@ var _ = Describe("Validation", func() {
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpGt, Values: []string{"1"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpLt, Values: []string{"1"}},
-				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn},
+				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpExists},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).To(Succeed())
+		})
+		It("should fail for In or NotIn with no values", func() {
+			for _, op := range []v1.NodeSelectorOperator{v1.NodeSelectorOpIn, v1.NodeSelectorOpNotIn} {
+				nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+				nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op, Values: []string{}}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+			}
 		})
 		It("should fail for unsupported ops", func() {
 			for _, op := range []v1.NodeSelectorOperator{"unknown"} {

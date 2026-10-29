@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/clock"
 
 	. "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/test"
@@ -213,6 +214,35 @@ var _ = Describe("CEL/Validation", func() {
 				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
 			}}
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+		})
+		It("should fail when creating a budget with a special cased cron that has a suffix", func() {
+			nodePool.Spec.Disruption.Budgets = []Budget{{
+				Nodes:    "10",
+				Schedule: new("@hourlyjunk"),
+				Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
+			}}
+			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+		})
+		It("should fail when creating a schedule with more than 5 entries", func() {
+			for _, schedule := range []string{"0 0 9 * * *", "TZ=America/New_York 0 9 * * *", "CRON_TZ=UTC 0 9 * * *"} {
+				nodePool.Spec.Disruption.Budgets = []Budget{{
+					Nodes:    "10",
+					Schedule: new(schedule),
+					Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))},
+				}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+			}
+		})
+		It("should succeed when creating a schedule with extra whitespace", func() {
+			nodePool.Spec.Disruption.Budgets = []Budget{
+				{Nodes: "10", Schedule: new(" 0  9 * *\tmon-fri "), Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))}},
+				{Nodes: "10", Schedule: new(" @daily "), Duration: &metav1.Duration{Duration: lo.Must(time.ParseDuration("20m"))}},
+			}
+			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
+			for _, budget := range nodePool.Spec.Disruption.Budgets {
+				_, err := budget.IsActive(clock.RealClock{})
+				Expect(err).ToNot(HaveOccurred())
+			}
 		})
 		It("should fail when creating a budget with a negative duration", func() {
 			nodePool.Spec.Disruption.Budgets = []Budget{{
@@ -419,6 +449,24 @@ var _ = Describe("CEL/Validation", func() {
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 			Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
 		})
+		It("should succeed for taint values that are valid label values", func() {
+			nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: "A-b_c.1"}}
+			nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "b", Effect: v1.TaintEffectNoSchedule, Value: strings.Repeat("a", 63)}}
+			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
+			Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
+		})
+		It("should fail for taint values that are not valid label values", func() {
+			for _, value := range []string{"example.com/gpu", "a/b", strings.Repeat("a", 64)} {
+				nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				nodePool.Spec.Template.Spec.StartupTaints = nil
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+				Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
+				nodePool.Spec.Template.Spec.Taints = nil
+				nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+				Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
+			}
+		})
 		It("should not fail for same key with different effects", func() {
 			nodePool.Spec.Template.Spec.Taints = []v1.Taint{
 				{Key: "a", Effect: v1.TaintEffectNoSchedule},
@@ -478,11 +526,19 @@ var _ = Describe("CEL/Validation", func() {
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpGt, Values: []string{"1"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpLt, Values: []string{"1"}},
-				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn},
+				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpExists},
 			}
 			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
 			Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
+		})
+		It("should fail for In or NotIn with no values", func() {
+			for _, op := range []v1.NodeSelectorOperator{v1.NodeSelectorOpIn, v1.NodeSelectorOpNotIn} {
+				nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+				nodePool.Spec.Template.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op, Values: []string{}}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+			}
 		})
 		It("should fail for unsupported ops", func() {
 			for _, op := range []v1.NodeSelectorOperator{"unknown"} {

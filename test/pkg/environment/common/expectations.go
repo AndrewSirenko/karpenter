@@ -964,20 +964,11 @@ func (env *Environment) EventuallyExpectDrifted(nodeClaims ...*v1.NodeClaim) {
 // It creates a policy that prevents nodes from registering if they have the label 'registration: fail'.
 //
 // The function performs the following steps:
-// 1. Verifies the cluster version is 1.28 or higher (requirement for ValidatingAdmissionPolicy)
-// 2. Creates an admission policy that specifically targets node creation
-// 3. Creates a binding for the admission policy to enforce the validation
-// 4. Ensures the policy is active through validation testing
-//
-// Note: Requires Kubernetes version 1.28+ to function properly.
+// 1. Creates an admission policy that specifically targets node creation
+// 2. Creates a binding for the admission policy to enforce the validation
+// 3. Ensures the policy is active through validation testing
 func (env *Environment) ExpectBlockNodeRegistration() {
 	GinkgoHelper()
-
-	version, err := env.KubeClient.Discovery().ServerVersion()
-	Expect(err).To(BeNil())
-	if version.Minor < "28" {
-		Skip("This test is only valid for K8s >= 1.28")
-	}
 
 	// Define the ValidatingAdmissionPolicy that will inspect node creation requests
 	// The policy's validation expression checks if the 'registration' label equals 'fail'
@@ -1047,19 +1038,10 @@ func (env *Environment) ExpectBlockNodeRegistration() {
 // It creates a policy that prevents nodeclassess from updating their status
 //
 // The function performs the following steps:
-// 1. Verifies the cluster version is 1.28 or higher (requirement for ValidatingAdmissionPolicy)
-// 2. Creates an admission policy that specifically targets nodeclass status updates
-// 3. Creates a binding for the admission policy to enforce the validation
-//
-// Note: Requires Kubernetes version 1.28+ to function properly.
+// 1. Creates an admission policy that specifically targets nodeclass status updates
+// 2. Creates a binding for the admission policy to enforce the validation
 func (env *Environment) ExpectBlockNodeClassStatus(nodeClass *unstructured.Unstructured) {
 	GinkgoHelper()
-
-	version, err := env.KubeClient.Discovery().ServerVersion()
-	Expect(err).To(BeNil())
-	if version.Minor < "28" {
-		Skip("This test is only valid for K8s >= 1.28")
-	}
 
 	// Define the ValidatingAdmissionPolicy that will inspect node creation requests
 	// The policy's validation expression checks if the 'registration' label equals 'fail'

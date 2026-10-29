@@ -141,7 +141,7 @@ type Budget struct {
 	// the upstream cronjob syntax. If omitted, the budget is always active.
 	// Timezones are not supported.
 	// This field is required if Duration is set.
-	// +kubebuilder:validation:Pattern:=`^(@(annually|yearly|monthly|weekly|daily|midnight|hourly))|((.+)\s(.+)\s(.+)\s(.+)\s(.+))$`
+	// +kubebuilder:validation:Pattern:=`^\s*(@(annually|yearly|monthly|weekly|daily|midnight|hourly)|\S+(\s+\S+){4})\s*$`
 	// +optional
 	Schedule *string `json:"schedule,omitempty" hash:"ignore"`
 	//nolint:kubeapilinter
@@ -228,6 +228,7 @@ type NodeClaimTemplateSpec struct {
 	// +listType=atomic
 	StartupTaints []v1.Taint `json:"startupTaints,omitempty"`
 	// Requirements are layered with GetLabels and applied to every node.
+	// +kubebuilder:validation:XValidation:message="requirements with operator 'NotIn' must have a value defined",rule="self.all(x, x.operator == 'NotIn' ? has(x.values) && x.values.size() != 0 : true)"
 	// +kubebuilder:validation:XValidation:message="requirements with operator 'In' must have a value defined",rule="self.all(x, x.operator == 'In' ? x.values.size() != 0 : true)"
 	// +kubebuilder:validation:XValidation:message="requirements operator 'Gt', 'Lt', 'Gte', or 'Lte' must have a single positive integer value",rule="self.all(x, (x.operator == 'Gt' || x.operator == 'Lt' || x.operator == 'Gte' || x.operator == 'Lte') ? (x.values.size() == 1 && int(x.values[0]) >= 0) : true)"
 	// +kubebuilder:validation:XValidation:message="requirements with 'minValues' must have at least that many values specified in the 'values' field",rule="self.all(x, (x.operator == 'In' && has(x.minValues)) ? x.values.size() >= x.minValues : true)"
