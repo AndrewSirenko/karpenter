@@ -134,10 +134,18 @@ var _ = Describe("Validation", func() {
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpGt, Values: []string{"1"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpLt, Values: []string{"1"}},
-				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn},
+				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpNotIn, Values: []string{"test"}},
 				{Key: v1.LabelTopologyZone, Operator: v1.NodeSelectorOpExists},
 			}
 			Expect(env.Client.Create(ctx, nodeClaim)).To(Succeed())
+		})
+		It("should fail for In or NotIn with no values", func() {
+			for _, op := range []v1.NodeSelectorOperator{v1.NodeSelectorOpIn, v1.NodeSelectorOpNotIn} {
+				nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+				nodeClaim.Spec.Requirements = []NodeSelectorRequirementWithMinValues{{Key: v1.LabelTopologyZone, Operator: op, Values: []string{}}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+			}
 		})
 		It("should fail for unsupported ops", func() {
 			for _, op := range []v1.NodeSelectorOperator{"unknown"} {

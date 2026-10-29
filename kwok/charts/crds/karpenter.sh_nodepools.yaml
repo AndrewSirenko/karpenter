@@ -338,6 +338,8 @@ spec:
                           type: array
                           x-kubernetes-list-type: atomic
                           x-kubernetes-validations:
+                            - message: requirements with operator 'NotIn' must have a value defined
+                              rule: 'self.all(x, x.operator == ''NotIn'' ? has(x.values) && x.values.size() != 0 : true)'
                             - message: requirements with operator 'In' must have a value defined
                               rule: 'self.all(x, x.operator == ''In'' ? x.values.size() != 0 : true)'
                             - message: requirements operator 'Gt', 'Lt', 'Gte', or 'Lte' must have a single positive integer value
