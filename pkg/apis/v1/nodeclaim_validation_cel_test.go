@@ -18,6 +18,7 @@ package v1_test
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/awslabs/operatorpkg/object"
 	. "github.com/onsi/ginkgo/v2"
@@ -85,6 +86,21 @@ var _ = Describe("Validation", func() {
 		It("should fail for invalid taint effect", func() {
 			nodeClaim.Spec.Taints = []v1.Taint{{Key: "invalid-effect", Effect: "???"}}
 			Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+		})
+		It("should succeed for taint values that are valid label values", func() {
+			nodeClaim.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: "A-b_c.1"}}
+			nodeClaim.Spec.StartupTaints = []v1.Taint{{Key: "b", Effect: v1.TaintEffectNoSchedule, Value: strings.Repeat("a", 63)}}
+			Expect(env.Client.Create(ctx, nodeClaim)).To(Succeed())
+		})
+		It("should fail for taint values that are not valid label values", func() {
+			for _, value := range []string{"example.com/gpu", "a/b", strings.Repeat("a", 64)} {
+				nodeClaim.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				nodeClaim.Spec.StartupTaints = nil
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+				nodeClaim.Spec.Taints = nil
+				nodeClaim.Spec.StartupTaints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				Expect(env.Client.Create(ctx, nodeClaim)).ToNot(Succeed())
+			}
 		})
 		It("should not fail for same key with different effects", func() {
 			nodeClaim.Spec.Taints = []v1.Taint{

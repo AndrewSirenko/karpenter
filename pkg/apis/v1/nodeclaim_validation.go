@@ -80,10 +80,8 @@ func validateTaintsField(taints []v1.Taint, existing map[taintKeyEffect]struct{}
 			errs = multierr.Append(errs, fmt.Errorf("invalid value: %s in %s", err, fieldName))
 		}
 		// Validate Value
-		if len(taint.Value) != 0 {
-			for _, err := range validation.IsQualifiedName(taint.Value) {
-				errs = multierr.Append(errs, fmt.Errorf("invalid value: %s in %s", err, fieldName))
-			}
+		for _, err := range validation.IsValidLabelValue(taint.Value) {
+			errs = multierr.Append(errs, fmt.Errorf("invalid value: %s in %s", err, fieldName))
 		}
 		// Validate effect
 		switch taint.Effect {

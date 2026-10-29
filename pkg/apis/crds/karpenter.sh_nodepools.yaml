@@ -375,7 +375,8 @@ spec:
                               value:
                                 description: The taint value corresponding to the taint key.
                                 type: string
-                                pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(\/))?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$
+                                maxLength: 63
+                                pattern: ^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$
                             required:
                               - effect
                               - key
@@ -411,7 +412,8 @@ spec:
                               value:
                                 description: The taint value corresponding to the taint key.
                                 type: string
-                                pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(\/))?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$
+                                maxLength: 63
+                                pattern: ^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$
                             required:
                               - effect
                               - key

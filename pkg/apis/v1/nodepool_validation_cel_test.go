@@ -419,6 +419,24 @@ var _ = Describe("CEL/Validation", func() {
 			Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
 			Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
 		})
+		It("should succeed for taint values that are valid label values", func() {
+			nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: "A-b_c.1"}}
+			nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "b", Effect: v1.TaintEffectNoSchedule, Value: strings.Repeat("a", 63)}}
+			Expect(env.Client.Create(ctx, nodePool)).To(Succeed())
+			Expect(nodePool.RuntimeValidate(ctx)).To(Succeed())
+		})
+		It("should fail for taint values that are not valid label values", func() {
+			for _, value := range []string{"example.com/gpu", "a/b", strings.Repeat("a", 64)} {
+				nodePool.Spec.Template.Spec.Taints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				nodePool.Spec.Template.Spec.StartupTaints = nil
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+				Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
+				nodePool.Spec.Template.Spec.Taints = nil
+				nodePool.Spec.Template.Spec.StartupTaints = []v1.Taint{{Key: "a", Effect: v1.TaintEffectNoSchedule, Value: value}}
+				Expect(env.Client.Create(ctx, nodePool)).ToNot(Succeed())
+				Expect(nodePool.RuntimeValidate(ctx)).ToNot(Succeed())
+			}
+		})
 		It("should not fail for same key with different effects", func() {
 			nodePool.Spec.Template.Spec.Taints = []v1.Taint{
 				{Key: "a", Effect: v1.TaintEffectNoSchedule},
