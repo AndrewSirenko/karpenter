@@ -116,7 +116,7 @@ func SubtractFrom(dest v1.ResourceList, src v1.ResourceList) {
 // kubelet actually holds during active resize transitions.
 func Ceiling(pod *v1.Pod) v1.ResourceRequirements {
 	return v1.ResourceRequirements{
-		Requests: resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{UseStatusResources: true}),
+		Requests: resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{UseStatusResources: true, InPlacePodLevelResourcesVerticalScalingEnabled: true}),
 		Limits:   resourcehelper.PodLimits(pod, resourcehelper.PodResourcesOptions{}),
 	}
 }

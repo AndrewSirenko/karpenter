@@ -751,6 +751,44 @@ var _ = Describe("Resources", func() {
 				v1.ResourceMemory: resource.MustParse("4Gi"),
 			})
 		})
+		It("should use pod-level status resources when higher than pod-level spec requests (resize-down in progress)", func() {
+			pod := test.Pod(test.PodOptions{
+				PodResourceRequirements: v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("2"), v1.ResourceMemory: resource.MustParse("1Gi")},
+				},
+				ResourceRequirements: v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("1"), v1.ResourceMemory: resource.MustParse("512Mi")},
+				},
+			})
+			pod.Status.AllocatedResources = v1.ResourceList{v1.ResourceCPU: resource.MustParse("6"), v1.ResourceMemory: resource.MustParse("2Gi")}
+			pod.Status.Resources = &v1.ResourceRequirements{
+				Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("6"), v1.ResourceMemory: resource.MustParse("2Gi")},
+			}
+			podResources := resources.Ceiling(pod)
+			ExpectResources(podResources.Requests, v1.ResourceList{
+				v1.ResourceCPU:    resource.MustParse("6"),
+				v1.ResourceMemory: resource.MustParse("2Gi"),
+			})
+		})
+		It("should use pod-level spec requests when higher than pod-level status resources (resize-up in progress)", func() {
+			pod := test.Pod(test.PodOptions{
+				PodResourceRequirements: v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("8"), v1.ResourceMemory: resource.MustParse("4Gi")},
+				},
+				ResourceRequirements: v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("1"), v1.ResourceMemory: resource.MustParse("512Mi")},
+				},
+			})
+			pod.Status.AllocatedResources = v1.ResourceList{v1.ResourceCPU: resource.MustParse("2"), v1.ResourceMemory: resource.MustParse("1Gi")}
+			pod.Status.Resources = &v1.ResourceRequirements{
+				Requests: v1.ResourceList{v1.ResourceCPU: resource.MustParse("2"), v1.ResourceMemory: resource.MustParse("1Gi")},
+			}
+			podResources := resources.Ceiling(pod)
+			ExpectResources(podResources.Requests, v1.ResourceList{
+				v1.ResourceCPU:    resource.MustParse("8"),
+				v1.ResourceMemory: resource.MustParse("4Gi"),
+			})
+		})
 		It("should use spec requests when allocatedResources is not set (no resize)", func() {
 			pod := test.Pod(test.PodOptions{
 				ResourceRequirements: v1.ResourceRequirements{
