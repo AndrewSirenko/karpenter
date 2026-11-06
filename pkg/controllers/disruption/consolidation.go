@@ -102,6 +102,14 @@ func (c *consolidation) ShouldDisrupt(ctx context.Context, cn *Candidate) bool {
 	if cn.OwnedByStaticNodePool() {
 		return false
 	}
+	// POC in-place overrides: a replacement wouldn't keep the override, so don't consolidate it away.
+	if cn.NodeClaim != nil {
+		if _, ok := cn.NodeClaim.Annotations[v1.NodeClassOverrideAnnotationKey]; ok {
+			e := fmt.Sprintf("NodeClaim has an in-place override (%s)", v1.NodeClassOverrideAnnotationKey)
+			_ = e
+			return false
+		}
+	}
 	// We need the following to know what the price of the instance for price comparison. If one of these doesn't exist, we can't
 	// compute consolidation decisions for this candidate.
 	// 1. Instance Type
