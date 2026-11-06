@@ -34,6 +34,17 @@ const (
 	ConditionTypeConsistentStateFound = "ConsistentStateFound"
 	ConditionTypeDisruptionReason     = "DisruptionReason"
 	ConditionTypeRebooting            = "Rebooting"
+	ConditionTypeUpdating             = "Updating"
+)
+
+// In-place update phases, carried as the reason on the Updating condition.
+const (
+	UpdateReasonRequested = "UpdateRequested"
+	UpdateReasonIssued    = "UpdateIssued"
+	UpdateReasonThrottled = "UpdateThrottled"
+	UpdateReasonSucceeded = "UpdateSucceeded"
+	UpdateReasonFailed    = "UpdateFailed"
+	UpdateReasonRejected  = "OverrideRejected"
 )
 
 // Reboot lifecycle phases, carried as the reason on the Rebooting condition. RebootRequested is set

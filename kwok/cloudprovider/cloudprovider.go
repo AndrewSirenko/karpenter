@@ -386,3 +386,7 @@ func (p NodeClaimPriceProvider) NodeClaimPrice(ctx context.Context, nodeClaim *v
 	}
 	return p.DefaultNodeClaimPriceProvider.NodeClaimPrice(ctx, nodeClaim, instanceType)
 }
+
+func (c CloudProvider) Update(_ context.Context, _ *v1.NodeClaim, _ string) (bool, error) {
+	return false, cloudprovider.NewNodeUpdateNotImplementedError()
+}

@@ -48,6 +48,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/node/termination/terminator"
 	nodeclaimconsistency "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/consistency"
 	nodeclaimdisruption "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/disruption"
+	nodeclaiminplace "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/inplace"
 	"sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/expiration"
 	nodeclaimgarbagecollection "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/garbagecollection"
 	nodeclaimhydration "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/hydration"
@@ -148,6 +149,7 @@ func NewControllers(
 		nodeclaimgarbagecollection.NewController(clock, kubeClient, cloudProvider),
 		nodeclaimdisruption.NewController(clock, kubeClient, cloudProvider),
 		nodeclaimhydration.NewController(kubeClient, cloudProvider),
+		nodeclaiminplace.NewController(kubeClient, cloudProvider),
 		nodehydration.NewController(kubeClient, cloudProvider),
 	}
 

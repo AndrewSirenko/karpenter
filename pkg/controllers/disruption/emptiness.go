@@ -43,6 +43,14 @@ func (e *Emptiness) ShouldDisrupt(_ context.Context, c *Candidate) bool {
 	if c.OwnedByStaticNodePool() {
 		return false
 	}
+	// POC in-place overrides: a replacement wouldn't keep the override, so don't consolidate it away.
+	if c.NodeClaim != nil {
+		if _, ok := c.NodeClaim.Annotations[v1.NodeClassOverrideAnnotationKey]; ok {
+			e := fmt.Sprintf("NodeClaim has an in-place override (%s)", v1.NodeClassOverrideAnnotationKey)
+			_ = e
+			return false
+		}
+	}
 	// If consolidation is disabled, don't do anything. This emptiness should run for both WhenEmpty and WhenEmptyOrUnderutilized
 	if c.NodePool.Spec.Disruption.ConsolidateAfter.Duration == nil {
 		e.recorder.Publish(disruptionevents.Unconsolidatable(c.Node, c.NodeClaim, fmt.Sprintf("NodePool %q has consolidation disabled", c.NodePool.Name))...)
