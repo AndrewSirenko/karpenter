@@ -64,6 +64,9 @@ type CloudProvider struct {
 	DeleteCalls        []*v1.NodeClaim
 	RebootCalls        []*v1.NodeClaim
 	RebootOperationIDs []string
+	// UpdateFunc, when set, handles Update. Unset means NodeUpdateNotImplementedError.
+	UpdateFunc         func(*v1.NodeClaim, string) (bool, error)
+	UpdateOperationIDs []string
 	GetCalls           []string
 
 	CreatedNodeClaims         map[string]*v1.NodeClaim
@@ -94,6 +97,8 @@ func (c *CloudProvider) Reset() {
 	c.NextCreateErr = nil
 	c.NextDeleteErr = nil
 	c.NextRebootErr = nil
+	c.UpdateFunc = nil
+	c.UpdateOperationIDs = nil
 	c.NextGetErr = nil
 	c.DeleteCalls = []*v1.NodeClaim{}
 	c.RebootCalls = nil
@@ -331,4 +336,14 @@ func (c *CloudProvider) Name() string {
 
 func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&v1alpha1.TestNodeClass{}}
+}
+
+func (c *CloudProvider) Update(_ context.Context, nodeClaim *v1.NodeClaim, operationID string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.UpdateOperationIDs = append(c.UpdateOperationIDs, operationID)
+	if c.UpdateFunc == nil {
+		return false, cloudprovider.NewNodeUpdateNotImplementedError()
+	}
+	return c.UpdateFunc(nodeClaim, operationID)
 }

@@ -142,6 +142,11 @@ type CloudProvider interface {
 	// do not support in-place reboot must return a *NodeRebootNotImplementedError, and a reboot that retrying can't
 	// make succeed (e.g. a missing permission) must return a *NodeRebootFailedError.
 	Reboot(ctx context.Context, nodeClaim *v1.NodeClaim, operationID string) error
+	// Update applies in-place, drainless changes to the instance backing the NodeClaim, such as a
+	// per-NodeClaim override set through the karpenter.sh/nodeclass-override annotation. It returns
+	// done=true once the instance matches its target. Providers without support return
+	// *NodeUpdateNotImplementedError. POC for designs/in-place-drainless-drift.md.
+	Update(ctx context.Context, nodeClaim *v1.NodeClaim, operationID string) (done bool, err error)
 	// RepairPolicies returns the complete static set of provider-supported unhealthy-condition repair policies.
 	RepairPolicies() []RepairPolicy
 	// Name returns the CloudProvider implementation name.
@@ -1054,4 +1059,63 @@ func PriceNodeClaim(ctx context.Context, nodeClaim *v1.NodeClaim, instanceType *
 		return 0, false
 	}
 	return price, true
+}
+
+// NodeUpdateNotImplementedError is returned by CloudProviders that do not support in-place updates.
+type NodeUpdateNotImplementedError struct{}
+
+func NewNodeUpdateNotImplementedError() *NodeUpdateNotImplementedError {
+	return &NodeUpdateNotImplementedError{}
+}
+
+func (e *NodeUpdateNotImplementedError) Error() string {
+	return "in-place update is not implemented by the cloud provider"
+}
+
+func IsNodeUpdateNotImplementedError(err error) bool {
+	var e *NodeUpdateNotImplementedError
+	return errors.As(err, &e)
+}
+
+// NodeUpdateFailedError is returned when an in-place update can't succeed on retry.
+// Rejected is true when the requested target itself is invalid (e.g. a bad override).
+type NodeUpdateFailedError struct {
+	Rejected bool
+	error
+}
+
+func NewNodeUpdateFailedError(rejected bool, err error) *NodeUpdateFailedError {
+	return &NodeUpdateFailedError{Rejected: rejected, error: err}
+}
+
+func (e *NodeUpdateFailedError) Error() string {
+	return fmt.Sprintf("in-place update failed, %s", e.error)
+}
+
+func (e *NodeUpdateFailedError) Unwrap() error { return e.error }
+
+func IsNodeUpdateFailedError(err error) bool {
+	var e *NodeUpdateFailedError
+	return errors.As(err, &e)
+}
+
+// NodeUpdateThrottledError is returned when a provider-side rate limit blocks the update for now.
+type NodeUpdateThrottledError struct {
+	RetryAfter time.Duration
+	error
+}
+
+func NewNodeUpdateThrottledError(retryAfter time.Duration, err error) *NodeUpdateThrottledError {
+	return &NodeUpdateThrottledError{RetryAfter: retryAfter, error: err}
+}
+
+func (e *NodeUpdateThrottledError) Error() string {
+	return fmt.Sprintf("in-place update throttled, retry after %s, %s", e.RetryAfter, e.error)
+}
+
+func (e *NodeUpdateThrottledError) Unwrap() error { return e.error }
+
+func IsNodeUpdateThrottledError(err error) bool {
+	var e *NodeUpdateThrottledError
+	return errors.As(err, &e)
 }
