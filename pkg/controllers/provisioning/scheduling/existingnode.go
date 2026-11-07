@@ -42,6 +42,12 @@ type ExistingNode struct {
 	// instanceType is the resolved cloud provider instance type backing the node, used to source DRA template devices
 	// for uninitialized nodes. It is nil for unmanaged nodes or when the node's instance type is not in the current set.
 	instanceType *cloudprovider.InstanceType
+
+	// info is set when StateNode belongs to a shared state.NodeSnapshot. The node is then read-only and the usage
+	// trackers below are copied from it on first write.
+	info          *state.NodeInfo
+	hostPortUsage *scheduling.HostPortUsage
+	volumeUsage   *scheduling.VolumeUsage
 }
 
 func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
@@ -78,6 +84,73 @@ func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, 
 	return node
 }
 
+// newSharedExistingNode is NewExistingNode for a node of a shared snapshot. It reads n and info but never writes them.
+func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *Topology, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
+	node := &ExistingNode{
+		StateNode:               n,
+		info:                    info,
+		cachedAvailable:         info.Available,
+		cachedTaints:            info.Taints,
+		topology:                topology,
+		requirements:            info.Requirements,
+		isUnderConsolidateAfter: isUnderConsolidateAfter,
+		instanceType:            instanceType,
+	}
+	if instanceType != nil {
+		for driver, limit := range instanceType.VolumeAttachmentLimits {
+			if n.VolumeUsage().FallbackLimitChanges(driver, limit) {
+				node.VolumeUsage().AddFallbackLimit(driver, limit)
+			}
+		}
+	}
+	resources.SubtractFrom(daemonResources, info.DaemonSetRequests)
+	for k, v := range daemonResources {
+		if v.AsApproximateFloat64() < 0 {
+			v.Set(0)
+			daemonResources[k] = v
+		}
+	}
+	node.remainingResources = resources.Subtract(info.Available, daemonResources)
+	topology.Register(v1.LabelHostname, info.HostName)
+	return node
+}
+
+// HostPortUsage returns the node's host port usage including pods added by this scheduler.
+func (n *ExistingNode) HostPortUsage() *scheduling.HostPortUsage {
+	if n.info == nil {
+		return n.StateNode.HostPortUsage()
+	}
+	if n.hostPortUsage == nil {
+		n.hostPortUsage = n.StateNode.HostPortUsage().DeepCopy()
+	}
+	return n.hostPortUsage
+}
+
+// VolumeUsage returns the node's volume usage including pods added by this scheduler.
+func (n *ExistingNode) VolumeUsage() *scheduling.VolumeUsage {
+	if n.info == nil {
+		return n.StateNode.VolumeUsage()
+	}
+	if n.volumeUsage == nil {
+		n.volumeUsage = n.StateNode.VolumeUsage().DeepCopy()
+	}
+	return n.volumeUsage
+}
+
+func (n *ExistingNode) readHostPortUsage() *scheduling.HostPortUsage {
+	if n.hostPortUsage != nil {
+		return n.hostPortUsage
+	}
+	return n.StateNode.HostPortUsage()
+}
+
+func (n *ExistingNode) readVolumeUsage() *scheduling.VolumeUsage {
+	if n.volumeUsage != nil {
+		return n.volumeUsage
+	}
+	return n.StateNode.VolumeUsage()
+}
+
 // CanAdd returns whether the pod can be added to the ExistingNode
 // based on the taints/tolerations, volume requirements, host port compatibility,
 // requirements, resources, and topology requirements
@@ -88,10 +161,10 @@ func (n *ExistingNode) CanAdd(ctx context.Context, pod *v1.Pod, podData *PodData
 	}
 	// determine the host ports that will be used if the pod schedules
 	hostPorts := scheduling.GetHostPorts(pod)
-	if err = n.VolumeUsage().ExceedsLimits(volumes); err != nil {
+	if err = n.readVolumeUsage().ExceedsLimits(volumes); err != nil {
 		return nil, nil, fmt.Errorf("checking volume usage, %w", err)
 	}
-	if err = n.HostPortUsage().Conflicts(pod, hostPorts); err != nil {
+	if err = n.readHostPortUsage().Conflicts(pod, hostPorts); err != nil {
 		return nil, nil, fmt.Errorf("checking host port usage, %w", err)
 	}
 	// check resource requests first since that's a pretty likely reason the pod won't schedule on an in-flight

@@ -199,6 +199,7 @@ type Options struct {
 	MinValuesPolicy                  MinValuesPolicy
 	IgnoreDRARequests                bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
 	LegacyNodeRepair                 bool // NOTE: This flag is planned for deprecation along with the legacy node repair controller.
+	ConsolidationParallelism         int
 	FeatureGates                     FeatureGates
 	schedulerConfigRaw               string
 	SchedulerConfig                  *SchedulerConfiguration
@@ -244,6 +245,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.StringVar(&o.minValuesPolicyRaw, "min-values-policy", env.WithDefaultString("MIN_VALUES_POLICY", string(MinValuesPolicyStrict)), "Min values policy for scheduling. Options include 'Strict' for existing behavior where min values are strictly enforced or 'BestEffort' where Karpenter relaxes min values when it isn't satisfied.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
 	fs.BoolVarWithEnv(&o.LegacyNodeRepair, "legacy-node-repair", "LEGACY_NODE_REPAIR", false, "When set with the NodeRepair feature gate, Karpenter runs the legacy node repair controller instead of node repair as a disruption method. The legacy controller only replaces nodes: it does not support terminate-first repair, reboot, repair policy priority or termination grace periods, or the karpenter.sh/do-not-repair annotation. NOTE: The legacy node repair controller is planned for deprecation. If you use it because the new one does not work for you, please open an issue with your use case or problem.")
+	fs.IntVar(&o.ConsolidationParallelism, "consolidation-parallelism", env.WithDefaultInt("CONSOLIDATION_PARALLELISM", 1), "The maximum number of scheduling simulations a consolidation method runs at once. 1 evaluates candidates one at a time. Values below 1 are treated as 1.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", featureGatesDefault()), featureGatesHelp())
 	fs.StringVar(&o.schedulerConfigRaw, "scheduler-config", env.WithDefaultString("SCHEDULER_CONFIG", ""), "A YAML/JSON document configuring the parts of the cluster's kube-scheduler behavior that Karpenter must mirror during scheduling simulation, currently only podTopologySpread.defaultConstraints. Empty means no scheduler-config overrides.")
 }
@@ -266,6 +268,9 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	}
 	if o.CPURequests <= 0 {
 		o.CPURequests = 1000
+	}
+	if o.ConsolidationParallelism < 1 {
+		o.ConsolidationParallelism = 1
 	}
 	gates, err := ParseFeatureGates(o.FeatureGates.inputStr)
 	if err != nil {

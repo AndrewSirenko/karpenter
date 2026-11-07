@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -102,9 +103,18 @@ type options struct {
 	// disruption candidate will free when it is terminated. Used by the terminate-first "would the pods fit once the
 	// slot is freed?" pass.
 	creditReservationCapacity map[string]int
+	nodeSnapshot              *state.NodeSnapshot
 }
 
 type Options = option.Function[options]
+
+// WithNodeSnapshot tells the scheduler that its state nodes come from snap. The scheduler then reuses the snapshot's
+// derived node values and never writes to the nodes, so many schedulers may share one snapshot concurrently.
+var WithNodeSnapshot = func(snap *state.NodeSnapshot) Options {
+	return func(opts *options) {
+		opts.nodeSnapshot = snap
+	}
+}
 
 var DisableReservedCapacityFallback = func(opts *options) {
 	opts.reservedOfferingMode = ReservedOfferingModeStrict
@@ -241,6 +251,10 @@ func NewScheduler(
 		}
 	}
 	s.deletingNodeNames = deletingNodeNames
+	if resolved.nodeSnapshot != nil {
+		s.calculateExistingNodeClaimsFromSnapshot(ctx, resolved.nodeSnapshot, stateNodes, daemonSetPods, nodeToNodePool, resolved.enforceConsolidateAfter)
+		return s
+	}
 	s.calculateExistingNodeClaims(ctx, stateNodes, daemonSetPods, nodeToNodePool, resolved.enforceConsolidateAfter)
 	return s
 }
@@ -844,6 +858,38 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 	s.sortExistingNodes()
 }
 
+// calculateExistingNodeClaimsFromSnapshot is calculateExistingNodeClaims over shared snapshot nodes. It reuses the
+// snapshot's NodeInfo, computing one for a node not in snap, and never writes to the nodes.
+func (s *Scheduler) calculateExistingNodeClaimsFromSnapshot(ctx context.Context, snap *state.NodeSnapshot, stateNodes []*state.StateNode, daemonSetPods []*corev1.Pod, nodePoolMap map[string]*v1.NodePool, enforceConsolidateAfter bool) {
+	daemons := lo.Reject(daemonSetPods, func(p *corev1.Pod, _ int) bool { return s.shouldSkipDaemonPod(ctx, p) })
+	daemonReqs := lo.Map(daemons, func(p *corev1.Pod, _ int) scheduling.Requirements { return scheduling.NewStrictPodRequirements(p) })
+	s.existingNodes = make([]*ExistingNode, 0, len(stateNodes))
+	for _, node := range stateNodes {
+		info := snap.Info(node)
+		if info == nil {
+			info = state.NewNodeInfo(node)
+		}
+		var compatible []*corev1.Pod
+		for i, p := range daemons {
+			if scheduling.Taints(info.Taints).ToleratesPod(p) != nil {
+				continue
+			}
+			if info.LabelRequirements.Compatible(daemonReqs[i]) != nil {
+				continue
+			}
+			compatible = append(compatible, p)
+		}
+		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
+		s.existingNodes = append(s.existingNodes, newSharedExistingNode(node, info, s.topology, resources.RequestsForPods(compatible...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		if np := node.Labels()[v1.NodePoolLabelKey]; np != "" {
+			if remaining, ok := s.remainingResources[np]; ok {
+				s.remainingResources[np] = resources.Subtract(remaining, info.Capacity)
+			}
+		}
+	}
+	s.sortExistingNodes()
+}
+
 // getCompatibleDaemonPods filters daemon pods that can schedule to the given node
 func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.StateNode, taints []corev1.Taint, daemonSetPods []*corev1.Pod) []*corev1.Pod {
 	var daemons []*corev1.Pod
@@ -889,15 +935,30 @@ func (s *Scheduler) sortExistingNodes() {
 	// Order the existing nodes for scheduling with initialized nodes first
 	// This is done specifically for consolidation where we want to make sure we schedule to initialized nodes
 	// before we attempt to schedule uninitialized ones
-	sort.SliceStable(s.existingNodes, func(i, j int) bool {
-		if s.existingNodes[i].Initialized() && !s.existingNodes[j].Initialized() {
-			return true
+	type sortKey struct {
+		initialized bool
+		name        string
+		node        *ExistingNode
+	}
+	keys := lo.Map(s.existingNodes, func(n *ExistingNode, _ int) sortKey {
+		if n.info != nil {
+			return sortKey{initialized: n.info.Initialized, name: n.info.Name, node: n}
 		}
-		if !s.existingNodes[i].Initialized() && s.existingNodes[j].Initialized() {
-			return false
-		}
-		return s.existingNodes[i].Name() < s.existingNodes[j].Name()
+		return sortKey{initialized: n.Initialized(), name: n.Name(), node: n}
 	})
+	cmp := func(a, b sortKey) int {
+		if a.initialized != b.initialized {
+			return lo.Ternary(a.initialized, -1, 1)
+		}
+		return strings.Compare(a.name, b.name)
+	}
+	if slices.IsSortedFunc(keys, cmp) {
+		return
+	}
+	slices.SortStableFunc(keys, cmp)
+	for i := range keys {
+		s.existingNodes[i] = keys[i].node
+	}
 }
 
 // computeEffectiveZoneFromPod calculates the effective zone constraint by intersecting
