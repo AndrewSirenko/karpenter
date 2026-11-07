@@ -230,6 +230,15 @@ func (v *VolumeUsage) AddFallbackLimit(storageDriver string, value int) {
 	}
 }
 
+// FallbackLimitChanges reports whether AddFallbackLimit(storageDriver, value) would change v.
+func (v *VolumeUsage) FallbackLimitChanges(storageDriver string, value int) bool {
+	if v.publishedDrivers.Has(storageDriver) {
+		return false
+	}
+	limit, ok := v.limits[storageDriver]
+	return !ok || limit != value
+}
+
 func (v *VolumeUsage) Add(pod *v1.Pod, volumes Volumes) {
 	v.podVolumes[client.ObjectKeyFromObject(pod)] = volumes
 	v.volumes = v.volumes.Union(volumes)

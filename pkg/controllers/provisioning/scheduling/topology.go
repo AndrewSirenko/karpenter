@@ -63,6 +63,7 @@ type Topology struct {
 	excludedPods sets.Set[string]
 	cluster      *state.Cluster
 	stateNodes   []*state.StateNode
+	nodeSnapshot *state.NodeSnapshot
 }
 
 func NewTopology(
@@ -75,9 +76,11 @@ func NewTopology(
 	pods []*corev1.Pod,
 	opts ...Options,
 ) (*Topology, error) {
+	resolved := option.Resolve(opts...)
 	t := &Topology{
 		kubeClient:            kubeClient,
-		preferencePolicy:      option.Resolve(opts...).preferencePolicy,
+		preferencePolicy:      resolved.preferencePolicy,
+		nodeSnapshot:          resolved.nodeSnapshot,
 		cluster:               cluster,
 		stateNodes:            stateNodes,
 		domainGroups:          buildDomainGroups(nodePools, instanceTypes),
@@ -354,6 +357,13 @@ func (t *Topology) updateInverseAntiAffinity(ctx context.Context, pod *corev1.Po
 	return nil
 }
 
+func (t *Topology) nodeLabelRequirements(n *state.StateNode) scheduling.Requirements {
+	if info := t.nodeSnapshot.Info(n); info != nil {
+		return info.NodeLabelRequirements
+	}
+	return scheduling.NewLabelRequirements(n.Node.Labels)
+}
+
 // countDomains initializes the topology group by registereding any well known domains and performing pod counts
 // against the cluster for any existing pods.
 func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
@@ -379,7 +389,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			continue
 		}
 		// ignore the node if it doesn't match the topology group
-		if !tg.nodeFilter.Matches(n.Node.Spec.Taints, scheduling.NewLabelRequirements(n.Node.Labels)) {
+		if !tg.nodeFilter.Matches(n.Node.Spec.Taints, t.nodeLabelRequirements(n)) {
 			continue
 		}
 		domain, exists := n.Labels()[tg.Key]

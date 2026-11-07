@@ -262,7 +262,7 @@ func (t *TopologyGroup) nextDomainTopologySpread(pod *corev1.Pod, podDomains, no
 				}
 				if count-min <= t.maxSkew {
 					validDomains.Insert(domain)
-					if count < minCount {
+					if count < minCount || (count == minCount && domain < minDomain) {
 						minDomain = domain
 						minCount = count
 					}
@@ -281,7 +281,7 @@ func (t *TopologyGroup) nextDomainTopologySpread(pod *corev1.Pod, podDomains, no
 				}
 				if count-min <= t.maxSkew {
 					validDomains.Insert(domain)
-					if count < minCount {
+					if count < minCount || (count == minCount && domain < minDomain) {
 						minDomain = domain
 						minCount = count
 					}

@@ -60,7 +60,8 @@ type consolidation struct {
 	lastConsolidationState time.Time
 	// evaluator is initialized non-nil at construction. SetNodePoolTotals
 	// replaces it with a balancedEvaluator carrying the new totals.
-	evaluator Evaluator
+	evaluator           Evaluator
+	parallelismOverride int
 }
 
 // NodePoolTotalsSetter is implemented by disruption methods that use balanced scoring.

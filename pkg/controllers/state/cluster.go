@@ -65,7 +65,11 @@ type Cluster struct {
 	nodeNameToProviderID      map[string]string               // node name -> provider id
 	nodeClaimNameToProviderID map[string]string               // node claim name -> provider id
 	nodePoolResources         map[string]corev1.ResourceList  // node pool name -> resource list
+	nodesVersion              uint64                          // bumped by every write section under mu, see SnapshotNodes
 	daemonSetPods             sync.Map                        // daemonSet -> existing pod
+
+	snapshotMu sync.Mutex
+	snapshot   *NodeSnapshot
 
 	repairPolicyMatcher *health.RepairPolicyMatcher // nil when node repair is disabled
 
@@ -311,9 +315,11 @@ func (c *Cluster) IsNodeNominated(providerID string) bool {
 func (c *Cluster) NominateNodeForPod(ctx context.Context, providerID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	if n, ok := c.nodes[providerID]; ok {
 		n.Nominate(ctx, c.clock) // extends nomination window if already nominated
+		c.touch(n)
 	}
 }
 
@@ -348,11 +354,13 @@ func (c *Cluster) BufferPodCount(providerID string) int {
 func (c *Cluster) UnmarkForDeletion(providerIDs ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	for _, id := range providerIDs {
 		if n, ok := c.nodes[id]; ok {
 			oldNode := n.ShallowCopy()
 			n.markedForDeletion = false
+			c.touch(n)
 			c.updateNodePoolResources(oldNode, n)
 			if n.NodeClaim != nil && n.NodeClaim.DeletionTimestamp.IsZero() {
 				c.NodePoolState.MarkNodeClaimActive(n.NodeClaim.Labels[v1.NodePoolLabelKey], n.NodeClaim.Name)
@@ -365,11 +373,13 @@ func (c *Cluster) UnmarkForDeletion(providerIDs ...string) {
 func (c *Cluster) MarkForDeletion(providerIDs ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	for _, id := range providerIDs {
 		if n, ok := c.nodes[id]; ok {
 			oldNode := n.ShallowCopy()
 			n.markedForDeletion = true
+			c.touch(n)
 			c.updateNodePoolResources(oldNode, n)
 			if n.NodeClaim != nil {
 				c.NodePoolState.MarkNodeClaimDeleting(n.NodeClaim.Labels[v1.NodePoolLabelKey], n.NodeClaim.Name)
@@ -381,12 +391,14 @@ func (c *Cluster) MarkForDeletion(providerIDs ...string) {
 func (c *Cluster) UpdateNodeClaim(nodeClaim *v1.NodeClaim) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	// If the nodeclaim has a providerID, create a StateNode for it, and populate the data.
 	// We only need to do this for a nodeclaim with a providerID as nodeclaims without provider IDs haven't
 	// been launched yet.
 	if nodeClaim.Status.ProviderID != "" {
 		n := c.newStateFromNodeClaim(nodeClaim, c.nodes[nodeClaim.Status.ProviderID])
+		c.touch(n)
 		c.nodes[nodeClaim.Status.ProviderID] = n
 	}
 
@@ -406,6 +418,7 @@ func (c *Cluster) UpdateNodeClaim(nodeClaim *v1.NodeClaim) {
 func (c *Cluster) DeleteNodeClaim(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	c.cleanupNodeClaim(name)
 	ClusterStateNodesCount.Set(float64(len(c.nodes)), nil)
@@ -414,6 +427,7 @@ func (c *Cluster) DeleteNodeClaim(name string) {
 func (c *Cluster) UpdateNode(ctx context.Context, node *corev1.Node) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	managed := node.Labels[v1.NodePoolLabelKey] != ""
 	initialized := node.Labels[v1.NodeInitializedLabelKey] != ""
@@ -433,6 +447,7 @@ func (c *Cluster) UpdateNode(ctx context.Context, node *corev1.Node) error {
 	if err != nil {
 		return err
 	}
+	c.touch(n)
 	c.nodes[node.Spec.ProviderID] = n
 	c.nodeNameToProviderID[node.Name] = node.Spec.ProviderID
 	ClusterStateNodesCount.Set(float64(len(c.nodes)), nil)
@@ -442,6 +457,7 @@ func (c *Cluster) UpdateNode(ctx context.Context, node *corev1.Node) error {
 func (c *Cluster) DeleteNode(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 	c.cleanupNode(name)
 	ClusterStateNodesCount.Set(float64(len(c.nodes)), nil)
 }
@@ -449,6 +465,7 @@ func (c *Cluster) DeleteNode(name string) {
 func (c *Cluster) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	var err error
 	if podutils.IsTerminal(pod) {
@@ -612,6 +629,7 @@ func (c *Cluster) PodSchedulingSuccessTimeRegistrationHealthyCheck(podKey types.
 func (c *Cluster) DeletePod(podKey types.NamespacedName) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 
 	c.antiAffinityPods.Delete(podKey)
 	c.updateNodeUsageFromPodCompletion(podKey)
@@ -671,6 +689,7 @@ func (c *Cluster) Reset() {
 	defer c.unsyncedTimeMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.nodesVersion++
 	c.clusterState = time.Time{}
 	c.unsyncedStartTime = time.Time{}
 	c.lastUnsyncedLogTime = time.Time{}
@@ -774,6 +793,7 @@ func (c *Cluster) cleanupNodeClaim(name string) {
 		} else {
 			oldNode := c.nodes[id].ShallowCopy()
 			c.nodes[id].NodeClaim = nil
+			c.touch(c.nodes[id])
 			c.updateNodePoolResources(oldNode, c.nodes[id])
 		}
 		c.MarkUnconsolidated()
@@ -829,6 +849,7 @@ func (c *Cluster) cleanupNode(name string) {
 		} else {
 			oldNode := c.nodes[id].ShallowCopy()
 			c.nodes[id].Node = nil
+			c.touch(c.nodes[id])
 			c.updateNodePoolResources(oldNode, c.nodes[id])
 		}
 		delete(c.nodeNameToProviderID, name)
@@ -957,6 +978,7 @@ func (c *Cluster) updateNodeUsageFromPod(ctx context.Context, pod *corev1.Pod) e
 		// the node must exist for us to update the resource requests on the node
 		return errors.NewNotFound(schema.GroupResource{Resource: "Node"}, pod.Spec.NodeName)
 	}
+	c.touch(n)
 	if err := n.updateForPod(ctx, c.kubeClient, pod); err != nil {
 		return err
 	}
@@ -978,6 +1000,7 @@ func (c *Cluster) updateNodeUsageFromPodCompletion(podKey types.NamespacedName) 
 		// we weren't tracking the node yet, so nothing to do
 		return
 	}
+	c.touch(n)
 	n.cleanupForPod(podKey)
 }
 
@@ -991,6 +1014,7 @@ func (c *Cluster) cleanupOldBindings(pod *corev1.Pod) {
 		// binding to a different node the second time
 		if oldNode, ok := c.nodes[c.nodeNameToProviderID[oldNodeName]]; ok {
 			// we were tracking the old node, so we need to reduce its capacity by the amount of the pod that left
+			c.touch(oldNode)
 			oldNode.cleanupForPod(client.ObjectKeyFromObject(pod))
 			delete(c.bindings, client.ObjectKeyFromObject(pod))
 		}
