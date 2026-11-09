@@ -16,6 +16,8 @@ To show the smoke test catches a regression, dispatch `perf-smoke` with `regress
 
 ## Audit it: `go run ./test/suites/performancev2/cmd/inventory`
 
+`make perf-inventory`, `make perf-calibrate DIR=... PROVIDER=... SOURCE=...` and `make perf-plot DIR=...` wrap the three commands below.
+
 The inventory prints every phase's gated and measured metrics, grouped by kind (duration, outcome, resource). Each bound comes with the calibration evidence behind it. It's generated from the same values the suite runs, plus the checked-in `calibration/<provider>.json`, and it needs no cluster.
 
 The command fails in two cases:
