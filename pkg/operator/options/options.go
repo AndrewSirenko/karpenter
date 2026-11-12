@@ -200,6 +200,8 @@ type Options struct {
 	IgnoreDRARequests                bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
 	LegacyNodeRepair                 bool // NOTE: This flag is planned for deprecation along with the legacy node repair controller.
 	FeatureGates                     FeatureGates
+	highCardinalityMetricsRaw        string
+	DisabledHighCardinalityMetrics   []string
 	schedulerConfigRaw               string
 	SchedulerConfig                  *SchedulerConfiguration
 }
@@ -245,6 +247,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
 	fs.BoolVarWithEnv(&o.LegacyNodeRepair, "legacy-node-repair", "LEGACY_NODE_REPAIR", false, "When set with the NodeRepair feature gate, Karpenter runs the legacy node repair controller instead of node repair as a disruption method. The legacy controller only replaces nodes: it does not support terminate-first repair, reboot, repair policy priority or termination grace periods, or the karpenter.sh/do-not-repair annotation. NOTE: The legacy node repair controller is planned for deprecation. If you use it because the new one does not work for you, please open an issue with your use case or problem.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", featureGatesDefault()), featureGatesHelp())
+	fs.StringVar(&o.highCardinalityMetricsRaw, "disable-high-cardinality-metrics", env.WithDefaultString("DISABLE_HIGH_CARDINALITY_METRICS", ""), highCardinalityMetricsHelp())
 	fs.StringVar(&o.schedulerConfigRaw, "scheduler-config", env.WithDefaultString("SCHEDULER_CONFIG", ""), "A YAML/JSON document configuring the parts of the cluster's kube-scheduler behavior that Karpenter must mirror during scheduling simulation, currently only podTopologySpread.defaultConstraints. Empty means no scheduler-config overrides.")
 }
 
@@ -272,6 +275,12 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 		return fmt.Errorf("parsing feature gates, %w", err)
 	}
 	o.FeatureGates = gates
+	disabledMetrics, err := ParseHighCardinalityMetrics(o.highCardinalityMetricsRaw)
+	if err != nil {
+		return fmt.Errorf("validating cli flags / env vars, %w", err)
+	}
+	o.DisabledHighCardinalityMetrics = disabledMetrics
+	SetDisabledHighCardinalityMetrics(disabledMetrics)
 	schedulerConfig, err := ParseSchedulerConfiguration(o.schedulerConfigRaw)
 	if err != nil {
 		return fmt.Errorf("parsing scheduler config, %w", err)

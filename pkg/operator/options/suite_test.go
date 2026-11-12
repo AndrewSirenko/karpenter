@@ -56,6 +56,7 @@ var _ = Describe("Options", func() {
 		"DISABLE_CONTROLLER_WARMUP",
 		"DISABLE_LEADER_ELECTION",
 		"DISABLE_CLUSTER_STATE_OBSERVABILITY",
+		"DISABLE_HIGH_CARDINALITY_METRICS",
 		"LEADER_ELECTION_NAMESPACE",
 		"MEMORY_LIMIT",
 		"LOG_LEVEL",
@@ -82,6 +83,7 @@ var _ = Describe("Options", func() {
 		for _, ev := range environmentVariables {
 			Expect(os.Unsetenv(ev)).To(Succeed())
 		}
+		options.SetDisabledHighCardinalityMetrics(nil)
 	})
 
 	Context("FeatureGates", func() {
@@ -150,6 +152,7 @@ var _ = Describe("Options", func() {
 				"--disable-controller-warmup=false",
 				"--disable-leader-election=true",
 				"--disable-cluster-state-observability=true",
+				"--disable-high-cardinality-metrics=PodName",
 				"--leader-election-name=karpenter-controller",
 				"--leader-election-namespace=karpenter",
 				"--memory-limit", "0",
@@ -174,6 +177,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisabledHighCardinalityMetrics:   []string{"PodName"},
 				LeaderElectionName:               new("karpenter-controller"),
 				LeaderElectionNamespace:          new("karpenter"),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -215,6 +219,7 @@ var _ = Describe("Options", func() {
 			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
 			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
+			os.Setenv("DISABLE_HIGH_CARDINALITY_METRICS", "PodName")
 			os.Setenv("LEADER_ELECTION_NAME", "karpenter-controller")
 			os.Setenv("LEADER_ELECTION_NAMESPACE", "karpenter")
 			os.Setenv("MEMORY_LIMIT", "0")
@@ -243,6 +248,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisabledHighCardinalityMetrics:   []string{"PodName"},
 				LeaderElectionName:               new("karpenter-controller"),
 				LeaderElectionNamespace:          new("karpenter"),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -283,6 +289,7 @@ var _ = Describe("Options", func() {
 			os.Setenv("DISABLE_CONTROLLER_WARMUP", "false")
 			os.Setenv("DISABLE_LEADER_ELECTION", "true")
 			os.Setenv("DISABLE_CLUSTER_STATE_OBSERVABILITY", "true")
+			os.Setenv("DISABLE_HIGH_CARDINALITY_METRICS", "PodName")
 			os.Setenv("MEMORY_LIMIT", "0")
 			os.Setenv("LOG_LEVEL", "debug")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
@@ -313,6 +320,7 @@ var _ = Describe("Options", func() {
 				DisableControllerWarmup:          new(false),
 				DisableLeaderElection:            new(true),
 				DisableClusterStateObservability: new(true),
+				DisabledHighCardinalityMetrics:   []string{"PodName"},
 				LeaderElectionName:               new("karpenter-leader-election"),
 				LeaderElectionNamespace:          new(""),
 				MemoryLimit:                      lo.ToPtr[int64](0),
@@ -412,6 +420,20 @@ var _ = Describe("Options", func() {
 		It("should error with an invalid log level", func() {
 			err := opts.Parse(fs, "--log-level", "hello")
 			Expect(err).ToNot(BeNil())
+		})
+		It("should error with an unknown high cardinality metric", func() {
+			err := opts.Parse(fs, "--disable-high-cardinality-metrics", "PodName,PodNames")
+			Expect(err).To(MatchError(ContainSubstring(`unknown high cardinality metric "PodNames"`)))
+		})
+		It("should trim and dedupe high cardinality metrics", func() {
+			Expect(opts.Parse(fs, "--disable-high-cardinality-metrics", " PodName ,,PodName")).To(Succeed())
+			Expect(opts.DisabledHighCardinalityMetrics).To(Equal([]string{"PodName"}))
+			Expect(options.HighCardinalityMetricDisabled(options.PodNameHighCardinalityMetric)).To(BeTrue())
+		})
+		It("should emit every high cardinality metric by default", func() {
+			Expect(opts.Parse(fs)).To(Succeed())
+			Expect(opts.DisabledHighCardinalityMetrics).To(BeEmpty())
+			Expect(options.HighCardinalityMetricDisabled(options.PodNameHighCardinalityMetric)).To(BeFalse())
 		})
 		DescribeTable(
 			"should fallback to the default if a non-positive value is provided for CPU_REQUESTS",
@@ -586,6 +608,7 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.DisableControllerWarmup).To(Equal(optsB.DisableControllerWarmup))
 	Expect(optsA.DisableLeaderElection).To(Equal(optsB.DisableLeaderElection))
 	Expect(optsA.DisableClusterStateObservability).To(Equal(optsB.DisableClusterStateObservability))
+	Expect(optsA.DisabledHighCardinalityMetrics).To(Equal(optsB.DisabledHighCardinalityMetrics))
 	Expect(optsA.MemoryLimit).To(Equal(optsB.MemoryLimit))
 	Expect(optsA.LogLevel).To(Equal(optsB.LogLevel))
 	Expect(optsA.LogOutputPaths).To(Equal(optsB.LogOutputPaths))
