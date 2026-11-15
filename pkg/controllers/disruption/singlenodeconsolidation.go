@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -56,7 +57,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	candidates = s.SortCandidates(ctx, candidates)
 
 	// Set a timeout
-	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
+	timeout := s.clock.Now().Add(lo.CoalesceOrEmpty(options.FromContext(ctx).SingleNodeConsolidationTimeout, SingleNodeConsolidationTimeoutDuration))
 	constrainedByBudgets := false
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)

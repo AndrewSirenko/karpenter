@@ -63,6 +63,8 @@ var _ = Describe("Options", func() {
 		"LOG_ERROR_OUTPUT_PATHS",
 		"BATCH_MAX_DURATION",
 		"BATCH_IDLE_DURATION",
+		"MULTI_NODE_CONSOLIDATION_TIMEOUT",
+		"SINGLE_NODE_CONSOLIDATION_TIMEOUT",
 		"PREFERENCE_POLICY",
 		"MIN_VALUES_POLICY",
 		"FEATURE_GATES",
@@ -121,6 +123,8 @@ var _ = Describe("Options", func() {
 				LogErrorOutputPaths:              new("stderr"),
 				BatchMaxDuration:                 lo.ToPtr(10 * time.Second),
 				BatchIdleDuration:                lo.ToPtr(time.Second),
+				MultiNodeConsolidationTimeout:    lo.ToPtr(time.Minute),
+				SingleNodeConsolidationTimeout:   lo.ToPtr(3 * time.Minute),
 				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyRespect),
 				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyStrict),
 				FeatureGates: test.FeatureGates{
@@ -159,6 +163,8 @@ var _ = Describe("Options", func() {
 				"--log-error-output-paths", "/etc/k8s/testerror",
 				"--batch-max-duration", "5s",
 				"--batch-idle-duration", "5s",
+				"--multi-node-consolidation-timeout", "2m",
+				"--single-node-consolidation-timeout", "5m",
 				"--preference-policy", "Ignore",
 				"--min-values-policy", "BestEffort",
 				"--feature-gates", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true,NodePoolDriftBackoff=true",
@@ -183,6 +189,8 @@ var _ = Describe("Options", func() {
 				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
 				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
 				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				MultiNodeConsolidationTimeout:    lo.ToPtr(2 * time.Minute),
+				SingleNodeConsolidationTimeout:   lo.ToPtr(5 * time.Minute),
 				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyIgnore),
 				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyBestEffort),
 				FeatureGates: test.FeatureGates{
@@ -225,6 +233,8 @@ var _ = Describe("Options", func() {
 			os.Setenv("LOG_ERROR_OUTPUT_PATHS", "/etc/k8s/testerror")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
 			os.Setenv("BATCH_IDLE_DURATION", "5s")
+			os.Setenv("MULTI_NODE_CONSOLIDATION_TIMEOUT", "2m")
+			os.Setenv("SINGLE_NODE_CONSOLIDATION_TIMEOUT", "5m")
 			os.Setenv("PREFERENCE_POLICY", "Ignore")
 			os.Setenv("MIN_VALUES_POLICY", "BestEffort")
 			os.Setenv("FEATURE_GATES", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true,NodePoolDriftBackoff=true")
@@ -253,6 +263,8 @@ var _ = Describe("Options", func() {
 				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
 				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
 				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				MultiNodeConsolidationTimeout:    lo.ToPtr(2 * time.Minute),
+				SingleNodeConsolidationTimeout:   lo.ToPtr(5 * time.Minute),
 				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyIgnore),
 				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyBestEffort),
 				FeatureGates: test.FeatureGates{
@@ -290,6 +302,8 @@ var _ = Describe("Options", func() {
 			os.Setenv("LOG_LEVEL", "debug")
 			os.Setenv("BATCH_MAX_DURATION", "5s")
 			os.Setenv("BATCH_IDLE_DURATION", "5s")
+			os.Setenv("MULTI_NODE_CONSOLIDATION_TIMEOUT", "2m")
+			os.Setenv("SINGLE_NODE_CONSOLIDATION_TIMEOUT", "5m")
 			os.Setenv("PREFERENCE_POLICY", "Ignore")
 			os.Setenv("MIN_VALUES_POLICY", "BestEffort")
 			os.Setenv("FEATURE_GATES", "ReservedCapacity=false,SpotToSpotConsolidation=true,NodeRepair=true,NodeOverlay=true,StaticCapacity=true,CapacityBuffer=true,NodePoolDriftBackoff=true")
@@ -324,6 +338,8 @@ var _ = Describe("Options", func() {
 				LogErrorOutputPaths:              new("/etc/k8s/testerror"),
 				BatchMaxDuration:                 lo.ToPtr(5 * time.Second),
 				BatchIdleDuration:                lo.ToPtr(5 * time.Second),
+				MultiNodeConsolidationTimeout:    lo.ToPtr(2 * time.Minute),
+				SingleNodeConsolidationTimeout:   lo.ToPtr(5 * time.Minute),
 				PreferencePolicy:                 lo.ToPtr(options.PreferencePolicyRespect),
 				MinValuesPolicy:                  lo.ToPtr(options.MinValuesPolicyStrict),
 				FeatureGates: test.FeatureGates{
@@ -426,6 +442,16 @@ var _ = Describe("Options", func() {
 			},
 			Entry("zero is provided", "0"),
 			Entry("negative value is provided", "-50"),
+		)
+		DescribeTable(
+			"should fallback to the default if a non-positive consolidation timeout is provided",
+			func(value string) {
+				Expect(opts.Parse(fs, "--multi-node-consolidation-timeout", value, "--single-node-consolidation-timeout", value)).To(Succeed())
+				Expect(opts.MultiNodeConsolidationTimeout).To(Equal(time.Minute))
+				Expect(opts.SingleNodeConsolidationTimeout).To(Equal(3 * time.Minute))
+			},
+			Entry("zero is provided", "0s"),
+			Entry("negative value is provided", "-5s"),
 		)
 	})
 
@@ -597,6 +623,8 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.LogErrorOutputPaths).To(Equal(optsB.LogErrorOutputPaths))
 	Expect(optsA.BatchMaxDuration).To(Equal(optsB.BatchMaxDuration))
 	Expect(optsA.BatchIdleDuration).To(Equal(optsB.BatchIdleDuration))
+	Expect(optsA.MultiNodeConsolidationTimeout).To(Equal(optsB.MultiNodeConsolidationTimeout))
+	Expect(optsA.SingleNodeConsolidationTimeout).To(Equal(optsB.SingleNodeConsolidationTimeout))
 	Expect(optsA.PreferencePolicy).To(Equal(optsB.PreferencePolicy))
 	Expect(optsA.MinValuesPolicy).To(Equal(optsB.MinValuesPolicy))
 	Expect(optsA.FeatureGates.ReservedCapacity).To(Equal(optsB.FeatureGates.ReservedCapacity))

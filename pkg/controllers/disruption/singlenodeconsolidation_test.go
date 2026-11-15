@@ -30,6 +30,7 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	"sigs.k8s.io/karpenter/pkg/utils/pdb"
@@ -204,6 +205,26 @@ var _ = Describe("SingleNodeConsolidation", func() {
 			}
 
 			_, _ = consolidation.ComputeCommands(ctx, budgetMapping, candidates...)
+
+			// Verify all nodepools are marked as timed out
+			// since we timed out before processing any candidates
+			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool1.Name)).To(BeTrue())
+			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool2.Name)).To(BeTrue())
+			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool3.Name)).To(BeTrue())
+		})
+		It("should mark nodepools as timed out at the configured timeout", func() {
+			// Create many candidates to trigger timeout
+			candidates, err := createCandidates(1.0, 10)
+			Expect(err).To(BeNil())
+
+			// Create a budget mapping that allows all disruptions
+			budgetMapping := map[string]int{
+				nodePool1.Name: 30,
+				nodePool2.Name: 30,
+				nodePool3.Name: 30,
+			}
+
+			_, _ = consolidation.ComputeCommands(options.ToContext(ctx, test.Options(test.OptionsFields{SingleNodeConsolidationTimeout: lo.ToPtr(-5 * time.Second)})), budgetMapping, candidates...)
 
 			// Verify all nodepools are marked as timed out
 			// since we timed out before processing any candidates
