@@ -202,6 +202,8 @@ type Options struct {
 	LogErrorOutputPaths              string
 	BatchMaxDuration                 time.Duration
 	BatchIdleDuration                time.Duration
+	MultiNodeConsolidationTimeout    time.Duration
+	SingleNodeConsolidationTimeout   time.Duration
 	preferencePolicyRaw              string
 	PreferencePolicy                 PreferencePolicy
 	minValuesPolicyRaw               string
@@ -249,6 +251,8 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.StringVar(&o.LogErrorOutputPaths, "log-error-output-paths", env.WithDefaultString("LOG_ERROR_OUTPUT_PATHS", "stderr"), "Optional comma separated paths for logging error output")
 	fs.DurationVar(&o.BatchMaxDuration, "batch-max-duration", env.WithDefaultDuration("BATCH_MAX_DURATION", 10*time.Second), "The maximum length of a batch window. The longer this is, the more pods we can consider for provisioning at one time which usually results in fewer but larger nodes.")
 	fs.DurationVar(&o.BatchIdleDuration, "batch-idle-duration", env.WithDefaultDuration("BATCH_IDLE_DURATION", time.Second), "The maximum amount of time with no new pending pods that if exceeded ends the current batching window. If pods arrive faster than this time, the batching window will be extended up to the maxDuration. If they arrive slower, the pods will be batched separately.")
+	fs.DurationVar(&o.MultiNodeConsolidationTimeout, "multi-node-consolidation-timeout", env.WithDefaultDuration("MULTI_NODE_CONSOLIDATION_TIMEOUT", time.Minute), "The longest multi-node consolidation searches before returning the largest valid command it found so far. Raise it for large clusters where the search times out.")
+	fs.DurationVar(&o.SingleNodeConsolidationTimeout, "single-node-consolidation-timeout", env.WithDefaultDuration("SINGLE_NODE_CONSOLIDATION_TIMEOUT", 3*time.Minute), "The longest single-node consolidation evaluates candidates before stopping and resuming from unseen NodePools on its next run.")
 	fs.StringVar(&o.preferencePolicyRaw, "preference-policy", env.WithDefaultString("PREFERENCE_POLICY", string(PreferencePolicyRespect)), "How the Karpenter scheduler should treat preferences. Preferences include preferredDuringSchedulingIgnoreDuringExecution node and pod affinities/anti-affinities and ScheduleAnyways topologySpreadConstraints. Can be one of 'Ignore' and 'Respect'")
 	fs.StringVar(&o.minValuesPolicyRaw, "min-values-policy", env.WithDefaultString("MIN_VALUES_POLICY", string(MinValuesPolicyStrict)), "Min values policy for scheduling. Options include 'Strict' for existing behavior where min values are strictly enforced or 'BestEffort' where Karpenter relaxes min values when it isn't satisfied.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
@@ -275,6 +279,12 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	}
 	if o.CPURequests <= 0 {
 		o.CPURequests = 1000
+	}
+	if o.MultiNodeConsolidationTimeout <= 0 {
+		o.MultiNodeConsolidationTimeout = time.Minute
+	}
+	if o.SingleNodeConsolidationTimeout <= 0 {
+		o.SingleNodeConsolidationTimeout = 3 * time.Minute
 	}
 	gates, err := ParseFeatureGates(o.FeatureGates.inputStr)
 	if err != nil {

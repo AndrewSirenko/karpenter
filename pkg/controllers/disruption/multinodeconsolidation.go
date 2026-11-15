@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
 const MultiNodeConsolidationTimeoutDuration = 1 * time.Minute
@@ -127,7 +128,7 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	var lastRejectedCmd Command
 	var lastRejectedPerPool map[string]ScoreResult
 	// Set a timeout
-	timeoutCtx, cancel := context.WithTimeout(ctx, MultiNodeConsolidationTimeoutDuration)
+	timeoutCtx, cancel := context.WithTimeout(ctx, lo.CoalesceOrEmpty(options.FromContext(ctx).MultiNodeConsolidationTimeout, MultiNodeConsolidationTimeoutDuration))
 	defer cancel()
 	for min <= max {
 		mid := (min + max) / 2
