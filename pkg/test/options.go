@@ -50,6 +50,7 @@ type OptionsFields struct {
 	BatchIdleDuration                *time.Duration
 	IgnoreDRARequests                *bool
 	LegacyNodeRepair                 *bool
+	ConsolidationParallelism         *int
 	FeatureGates                     FeatureGates
 	SchedulerConfig                  *options.SchedulerConfiguration
 }
@@ -96,6 +97,7 @@ func Options(overrides ...OptionsFields) *options.Options {
 		MinValuesPolicy:                  lo.FromPtrOr(opts.MinValuesPolicy, options.MinValuesPolicyStrict),
 		IgnoreDRARequests:                lo.FromPtrOr(opts.IgnoreDRARequests, true),
 		LegacyNodeRepair:                 lo.FromPtrOr(opts.LegacyNodeRepair, false),
+		ConsolidationParallelism:         lo.FromPtrOr(opts.ConsolidationParallelism, 1),
 		SchedulerConfig:                  opts.SchedulerConfig,
 		FeatureGates: options.FeatureGates{
 			NodeRepair:                lo.FromPtrOr(opts.FeatureGates.NodeRepair, options.NodeRepairFeatureGate.Default),

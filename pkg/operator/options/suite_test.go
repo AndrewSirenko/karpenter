@@ -422,6 +422,19 @@ var _ = Describe("Options", func() {
 			Entry("zero is provided", "0"),
 			Entry("negative value is provided", "-50"),
 		)
+		DescribeTable(
+			"should fallback to 1 if a non-positive value is provided for CONSOLIDATION_PARALLELISM",
+			func(value string) {
+				Expect(opts.Parse(fs, "--consolidation-parallelism", value)).To(Succeed())
+				Expect(opts.ConsolidationParallelism).To(Equal(1))
+			},
+			Entry("zero is provided", "0"),
+			Entry("negative value is provided", "-2"),
+		)
+		It("should parse the consolidation parallelism", func() {
+			Expect(opts.Parse(fs, "--consolidation-parallelism", "8")).To(Succeed())
+			Expect(opts.ConsolidationParallelism).To(Equal(8))
+		})
 	})
 
 })
@@ -604,5 +617,6 @@ func expectOptionsMatch(optsA, optsB *options.Options) {
 	Expect(optsA.FeatureGates.TerminateFirstRepair).To(Equal(optsB.FeatureGates.TerminateFirstRepair))
 	Expect(optsA.IgnoreDRARequests).To(Equal(optsB.IgnoreDRARequests))
 	Expect(optsA.LegacyNodeRepair).To(Equal(optsB.LegacyNodeRepair))
+	Expect(optsA.ConsolidationParallelism).To(Equal(optsB.ConsolidationParallelism))
 	Expect(optsA.SchedulerConfig).To(Equal(optsB.SchedulerConfig))
 }

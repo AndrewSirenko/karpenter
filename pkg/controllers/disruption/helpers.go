@@ -58,14 +58,30 @@ type SimulationOptions struct {
 	IncludeBlockedCandidatePods bool
 }
 
+// simulateFromSnapshot selects the shared node snapshot path. Tests turn it off to compare against per-call deep copies.
+var simulateFromSnapshot = true
+
 // SimulateScheduling determines whether candidate workloads can be rescheduled after disruption.
+//
+// Calls are safe to run concurrently. Each call reads a shared, read-only state.NodeSnapshot (rebuilt only for nodes
+// that changed since the last call) and keeps its own scheduler, topology and per-node usage. Results.ExistingNodes
+// wrap snapshot nodes, so callers must not mutate their StateNode.
 func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *state.Cluster, provisioner *provisioning.Provisioner, clk clock.Clock, recorder events.Recorder,
 	schedulerOpts []scheduling.Options, simulationOpts SimulationOptions, candidates ...*Candidate,
 ) (scheduling.Results, error) {
 	candidateNames := sets.New[string](lo.Map(candidates, func(t *Candidate, i int) string { return t.Name() })...)
-	nodes := cluster.DeepCopyNodes()
-	deletingNodes := nodes.Deleting()
-	stateNodes := lo.Filter(nodes.Active(), func(n *state.StateNode, _ int) bool {
+	var deletingNodes, activeNodes state.StateNodes
+	var snapshotOpts []scheduling.Options
+	if simulateFromSnapshot {
+		snap := cluster.SnapshotNodes()
+		deletingNodes, activeNodes = snap.Deleting(), snap.Active()
+		snapshotOpts = append(snapshotOpts, scheduling.WithNodeSnapshot(snap))
+	} else {
+		nodes := cluster.DeepCopyNodes()
+		state.SortNodes(nodes)
+		deletingNodes, activeNodes = nodes.Deleting(), nodes.Active()
+	}
+	stateNodes := lo.Filter(activeNodes, func(n *state.StateNode, _ int) bool {
 		return !candidateNames.Has(n.Name())
 	})
 
@@ -120,6 +136,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	}
 	opts = append(opts, scheduling.MinValuesPolicy(options.FromContext(ctx).MinValuesPolicy))
 	opts = append(opts, schedulerOpts...)
+	opts = append(opts, snapshotOpts...)
 	// Both consolidation candidate pods and pods on already-deleting nodes are migrating off their current nodes, so
 	// the DRA allocator should treat the devices they hold as available for reallocation (and re-allocate their claims).
 	deletingPodUIDs := sets.New(lo.Map(append(candidatePods, deletingNodePods...), func(p *corev1.Pod, _ int) types.UID { return p.UID })...)

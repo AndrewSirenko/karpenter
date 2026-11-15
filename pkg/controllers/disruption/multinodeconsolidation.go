@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"time"
 
 	"github.com/awslabs/operatorpkg/option"
@@ -110,15 +111,37 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 
 // firstNConsolidationOption looks at the first N NodeClaims to determine if they can all be consolidated at once.  The
 // NodeClaims are sorted by increasing disruption order which correlates to likelihood of being able to consolidate the node
+// speculationDepth is how many binary search levels fit in workers concurrent probes, 2^depth - 1 <= workers.
+func speculationDepth(workers int) int {
+	return max(1, bits.Len(uint(workers+1))-1)
+}
+
+// speculate probes every mid the binary search could visit in the next depth levels from [min, max], concurrently.
+func (m *MultiNodeConsolidation) speculate(ctx context.Context, candidates []*Candidate, min, max, depth int) map[int]probeResult {
+	var mids []int
+	var walk func(l, h, d int)
+	walk = func(l, h, d int) {
+		if d == 0 || l > h {
+			return
+		}
+		mid := (l + h) / 2
+		mids = append(mids, mid)
+		walk(mid+1, h, d-1)
+		walk(l, mid-1, d-1)
+	}
+	walk(min, max, depth)
+	results := m.probeAll(ctx, lo.Map(mids, func(mid int, _ int) []*Candidate { return candidates[0 : mid+1] }))
+	return lo.SliceToMap(lo.Range(len(mids)), func(i int) (int, probeResult) { return mids[i], results[i] })
+}
+
 func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, candidates []*Candidate, max int) (Command, map[string]ScoreResult, error) {
 	// we always operate on at least two NodeClaims at once, for single NodeClaims standard consolidation will find all solutions
 	if len(candidates) < 2 {
 		return Command{}, nil, nil
 	}
 	min := 1
-	if len(candidates) <= max {
-		max = len(candidates) - 1
-	}
+	// The search probes candidates[0:mid+1], so mid is at most max-1.
+	max = lo.Min([]int{max, len(candidates)}) - 1
 
 	lastSavedCommand := Command{}
 	var lastSavedPerPool map[string]ScoreResult
@@ -129,52 +152,67 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	// Set a timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, MultiNodeConsolidationTimeoutDuration)
 	defer cancel()
+	depth := speculationDepth(m.parallelism(ctx))
 	for min <= max {
-		mid := (min + max) / 2
-		candidatesToConsolidate := candidates[0 : mid+1]
+		var probes map[int]probeResult
+		if depth > 1 {
+			probes = m.speculate(timeoutCtx, candidates, min, max, depth)
+		}
+		for level := 0; level < depth && min <= max; level++ {
+			mid := (min + max) / 2
+			candidatesToConsolidate := candidates[0 : mid+1]
 
-		// Pass the timeout context to ensure sub-operations can be canceled
-		cmd, err := m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
-		// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: m.ConsolidationType()})
-				if lastSavedCommand.Candidates == nil {
-					log.FromContext(ctx).V(1).Info("failed to find a multi-node consolidation after timeout", "last_batch_size", (min+max)/2)
-					return Command{}, nil, nil
+			var cmd Command
+			var err error
+			if probes == nil {
+				// Pass the timeout context to ensure sub-operations can be canceled
+				cmd, err = m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
+			} else {
+				r := probes[mid]
+				r.publish(m.recorder)
+				cmd, err = r.cmd, r.err
+			}
+			// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: m.ConsolidationType()})
+					if lastSavedCommand.Candidates == nil {
+						log.FromContext(ctx).V(1).Info("failed to find a multi-node consolidation after timeout", "last_batch_size", (min+max)/2)
+						return Command{}, nil, nil
+					}
+					log.FromContext(ctx).V(1).WithValues(lastSavedCommand.LogValues()...).Info("stopping multi-node consolidation after timeout, returning last valid command")
+					return lastSavedCommand, lastSavedPerPool, nil
+
 				}
-				log.FromContext(ctx).V(1).WithValues(lastSavedCommand.LogValues()...).Info("stopping multi-node consolidation after timeout, returning last valid command")
-				return lastSavedCommand, lastSavedPerPool, nil
-
+				return Command{}, nil, err
 			}
-			return Command{}, nil, err
-		}
-		// ensure that the action is sensical for replacements, see explanation on filterOutSameType for why this is
-		// required
-		validDecision := cmd.Decision() == DeleteDecision
-		if cmd.Decision() == ReplaceDecision {
-			cmd.Replacements[0], err = filterOutSameInstanceType(cmd.Replacements[0], candidatesToConsolidate)
-			// we check the error before the replacement instanceTypeOptions since we return nil for the replacement if we get an error
-			if err == nil && len(cmd.Replacements[0].InstanceTypeOptions) > 0 {
-				validDecision = true
+			// ensure that the action is sensical for replacements, see explanation on filterOutSameType for why this is
+			// required
+			validDecision := cmd.Decision() == DeleteDecision
+			if cmd.Decision() == ReplaceDecision {
+				cmd.Replacements[0], err = filterOutSameInstanceType(cmd.Replacements[0], candidatesToConsolidate)
+				// we check the error before the replacement instanceTypeOptions since we return nil for the replacement if we get an error
+				if err == nil && len(cmd.Replacements[0].InstanceTypeOptions) > 0 {
+					validDecision = true
+				}
 			}
-		}
-		// Score the move: Balanced pools may reject; other policies pass through.
-		if validDecision {
-			if approved, perPool := m.evaluator.ApproveCommand(ctx, cmd); !approved {
-				validDecision = false
-				lastRejectedCmd = cmd
-				lastRejectedPerPool = perPool
-			} else if perPool != nil {
-				lastSavedPerPool = perPool
+			// Score the move: Balanced pools may reject; other policies pass through.
+			if validDecision {
+				if approved, perPool := m.evaluator.ApproveCommand(ctx, cmd); !approved {
+					validDecision = false
+					lastRejectedCmd = cmd
+					lastRejectedPerPool = perPool
+				} else if perPool != nil {
+					lastSavedPerPool = perPool
+				}
 			}
-		}
-		if validDecision {
-			// We can consolidate NodeClaims [0,mid]
-			lastSavedCommand = cmd
-			min = mid + 1
-		} else {
-			max = mid - 1
+			if validDecision {
+				// We can consolidate NodeClaims [0,mid]
+				lastSavedCommand = cmd
+				min = mid + 1
+			} else {
+				max = mid - 1
+			}
 		}
 	}
 	// If binary search found no valid command and balanced scoring rejected at
