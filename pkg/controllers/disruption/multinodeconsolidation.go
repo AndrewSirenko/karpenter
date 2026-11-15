@@ -116,9 +116,7 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 		return Command{}, nil, nil
 	}
 	min := 1
-	if len(candidates) <= max {
-		max = len(candidates) - 1
-	}
+	max = lo.Min([]int{max, len(candidates)}) - 1
 
 	lastSavedCommand := Command{}
 	var lastSavedPerPool map[string]ScoreResult
