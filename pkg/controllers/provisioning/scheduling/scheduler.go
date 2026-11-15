@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -889,15 +890,23 @@ func (s *Scheduler) sortExistingNodes() {
 	// Order the existing nodes for scheduling with initialized nodes first
 	// This is done specifically for consolidation where we want to make sure we schedule to initialized nodes
 	// before we attempt to schedule uninitialized ones
-	sort.SliceStable(s.existingNodes, func(i, j int) bool {
-		if s.existingNodes[i].Initialized() && !s.existingNodes[j].Initialized() {
-			return true
-		}
-		if !s.existingNodes[i].Initialized() && s.existingNodes[j].Initialized() {
-			return false
-		}
-		return s.existingNodes[i].Name() < s.existingNodes[j].Name()
+	type sortKey struct {
+		initialized bool
+		name        string
+		node        *ExistingNode
+	}
+	keys := lo.Map(s.existingNodes, func(n *ExistingNode, _ int) sortKey {
+		return sortKey{initialized: n.Initialized(), name: n.Name(), node: n}
 	})
+	slices.SortStableFunc(keys, func(a, b sortKey) int {
+		if a.initialized != b.initialized {
+			return lo.Ternary(a.initialized, -1, 1)
+		}
+		return strings.Compare(a.name, b.name)
+	})
+	for i := range keys {
+		s.existingNodes[i] = keys[i].node
+	}
 }
 
 // computeEffectiveZoneFromPod calculates the effective zone constraint by intersecting
