@@ -4146,6 +4146,65 @@ var _ = Describe("Consolidation", func() {
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),
 		)
+		It("should disrupt at most 100 nodes in one command when more are in budget", func() {
+			nodeClaims, nodes = test.NodeClaimsAndNodes(150, v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: mostExpensiveInstance.Name,
+						v1.CapacityTypeLabelKey:        mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+						corev1.LabelTopologyZone:       mostExpensiveOffering.Requirements.Get(corev1.LabelTopologyZone).Any(),
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:  resource.MustParse("32"),
+						corev1.ResourcePods: resource.MustParse("100"),
+					},
+				},
+			})
+			anchorClaim, anchor := test.NodeClaimAndNode(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: mostExpensiveInstance.Name,
+						v1.CapacityTypeLabelKey:        mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+						corev1.LabelTopologyZone:       mostExpensiveOffering.Requirements.Get(corev1.LabelTopologyZone).Any(),
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:  resource.MustParse("1000"),
+						corev1.ResourcePods: resource.MustParse("1000"),
+					},
+				},
+			})
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs, nodePool, anchorClaim, anchor)
+			for i := range nodeClaims {
+				nodeClaims[i].StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+				pod := test.Pod(test.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{Labels: labels, OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: new(true), BlockOwnerDeletion: new(true)}}},
+				})
+				ExpectApplied(ctx, env.Client, nodeClaims[i], nodes[i], pod)
+				ExpectManualBinding(ctx, env.Client, pod, nodes[i])
+			}
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, append([]*corev1.Node{anchor}, nodes...), append([]*v1.NodeClaim{anchorClaim}, nodeClaims...))
+
+			c := disruption.MakeConsolidation(env.Clock, cluster, env.Client, prov, cloudProvider, recorder, queue)
+			multiNodeConsolidation := disruption.NewMultiNodeConsolidation(c, disruption.WithValidator(NewTestMultiConsolidationValidator(nodePool)))
+			budgets, err := disruption.BuildDisruptionBudgetMapping(ctx, cluster, env.Clock, env.Client, cloudProvider, recorder, multiNodeConsolidation.Reason())
+			Expect(err).To(Succeed())
+			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, env.Clock, cloudProvider, multiNodeConsolidation.ShouldDisrupt, multiNodeConsolidation.Class(), queue)
+			Expect(err).To(Succeed())
+			Expect(candidates).To(HaveLen(150))
+
+			cmds, err := multiNodeConsolidation.ComputeCommands(ctx, budgets, candidates...)
+			Expect(err).To(Succeed())
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Decision()).To(Equal(disruption.DeleteDecision))
+			Expect(cmds[0].Candidates).To(HaveLen(100))
+		})
 		DescribeTable("can merge 3 nodes into 1 without available Spot offerings", func(requirements []v1.NodeSelectorRequirementWithMinValues, includeUnavailableSpot bool) {
 			if requirements != nil {
 				nodePool.Spec.Template.Spec.Requirements = requirements
