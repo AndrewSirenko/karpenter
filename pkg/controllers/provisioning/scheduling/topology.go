@@ -64,6 +64,10 @@ type Topology struct {
 	cluster      *state.Cluster
 	stateNodes   []*state.StateNode
 	nodeSnapshot *state.NodeSnapshot
+	// excludedSnapshotNodes are the snapshot's active nodes missing from stateNodes, set by snapshotExclusions.
+	excludedSnapshotNodes []*state.StateNode
+	exclusionsChecked     bool
+	stateNodesFromActive  bool
 }
 
 func NewTopology(
@@ -367,6 +371,46 @@ func (t *Topology) nodeLabelRequirements(n *state.StateNode) scheduling.Requirem
 // countDomains initializes the topology group by registereding any well known domains and performing pod counts
 // against the cluster for any existing pods.
 func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
+	if counts, err := t.snapshotDomainCounts(ctx, tg); err != nil || counts != nil {
+		if err != nil {
+			return err
+		}
+		counts.apply(t, tg)
+		return nil
+	}
+	// capture new domain values from existing nodes that may not have any pods selected by the topology group
+	// scheduled to them already
+	// Note: long term we should handle this when constructing the domain groups, but that would require domain groups
+	// to handle affinity in addition to taints / tolerations.
+	for _, n := range t.stateNodes {
+		domain, ok := t.nodeDomain(tg, n)
+		if !ok {
+			continue
+		}
+		if _, ok := tg.domains[domain]; !ok {
+			tg.domains[domain] = 0
+			tg.emptyDomains.Insert(domain)
+		}
+	}
+	return t.forCountedPods(ctx, tg, t.excludedPods.Has, func(_ string, domain string) { tg.Record(domain) })
+}
+
+// nodeDomain returns the domain a state node adds to tg even without pods.
+func (t *Topology) nodeDomain(tg *TopologyGroup, n *state.StateNode) (string, bool) {
+	// ignore state nodes which are tracking in-flight NodeClaims
+	if n.Node == nil {
+		return "", false
+	}
+	// ignore the node if it doesn't match the topology group
+	if !tg.nodeFilter.Matches(n.Node.Spec.Taints, t.nodeLabelRequirements(n)) {
+		return "", false
+	}
+	domain, exists := n.Labels()[tg.Key]
+	return domain, exists
+}
+
+// forCountedPods calls count with the UID and domain of every existing pod that counts toward tg, skipping excluded pods.
+func (t *Topology) forCountedPods(ctx context.Context, tg *TopologyGroup, excluded func(string) bool, count func(uid string, domain string)) error {
 	podList := &corev1.PodList{}
 
 	// collect the pods from all the specified namespaces (don't see a way to query multiple namespaces
@@ -377,29 +421,6 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			return fmt.Errorf("listing pods, %w", err)
 		}
 		pods = append(pods, podList.Items...)
-	}
-
-	// capture new domain values from existing nodes that may not have any pods selected by the topology group
-	// scheduled to them already
-	// Note: long term we should handle this when constructing the domain groups, but that would require domain groups
-	// to handle affinity in addition to taints / tolerations.
-	for _, n := range t.stateNodes {
-		// ignore state nodes which are tracking in-flight NodeClaims
-		if n.Node == nil {
-			continue
-		}
-		// ignore the node if it doesn't match the topology group
-		if !tg.nodeFilter.Matches(n.Node.Spec.Taints, t.nodeLabelRequirements(n)) {
-			continue
-		}
-		domain, exists := n.Labels()[tg.Key]
-		if !exists {
-			continue
-		}
-		if _, ok := tg.domains[domain]; !ok {
-			tg.domains[domain] = 0
-			tg.emptyDomains.Insert(domain)
-		}
 	}
 
 	// sort our pods by the node they are scheduled to
@@ -414,7 +435,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			continue
 		}
 		// pod is excluded for counting purposes
-		if t.excludedPods.Has(string(p.UID)) {
+		if excluded(string(p.UID)) {
 			continue
 		}
 		var node *corev1.Node
@@ -461,9 +482,113 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 		if !tg.nodeFilter.Matches(node.Spec.Taints, nodeRequirements) {
 			continue
 		}
-		tg.Record(domain)
+		count(string(p.UID), domain)
 	}
 	return nil
+}
+
+// domainCounts is what countDomains finds for a topology group over all of a snapshot's active nodes, excluding no pods.
+// It is shared by every scheduler using the snapshot.
+type domainCounts struct {
+	// nodes is the number of active nodes that add each domain.
+	nodes map[string]int
+	// pods is the number of existing pods counted in each domain.
+	pods map[string]int32
+	// podDomains is the domain each counted pod's UID is counted in.
+	podDomains map[string]string
+}
+
+type domainCountsKey struct {
+	key  string
+	hash uint64
+}
+
+type activeNodesKey struct{}
+
+// snapshotDomainCounts returns the snapshot's shared counts for tg, or nil when the topology does not use a snapshot or
+// its state nodes are not the snapshot's active nodes minus some.
+func (t *Topology) snapshotDomainCounts(ctx context.Context, tg *TopologyGroup) (*domainCounts, error) {
+	if t.nodeSnapshot == nil || !t.snapshotExclusions() {
+		return nil, nil
+	}
+	v, err := t.nodeSnapshot.Derived(domainCountsKey{key: tg.Key, hash: tg.Hash()}, func() (any, error) {
+		c := &domainCounts{nodes: map[string]int{}, pods: map[string]int32{}, podDomains: map[string]string{}}
+		for _, n := range t.snapshotActive() {
+			if domain, ok := t.nodeDomain(tg, n); ok {
+				c.nodes[domain]++
+			}
+		}
+		err := t.forCountedPods(ctx, tg, func(string) bool { return false }, func(uid string, domain string) {
+			c.pods[domain]++
+			c.podDomains[uid] = domain
+		})
+		return c, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*domainCounts), nil
+}
+
+// apply records c into tg minus the topology's excluded nodes and pods, matching countDomains over t.stateNodes.
+func (c *domainCounts) apply(t *Topology, tg *TopologyGroup) {
+	var lostNodes map[string]int
+	for _, n := range t.excludedSnapshotNodes {
+		if domain, ok := t.nodeDomain(tg, n); ok {
+			if lostNodes == nil {
+				lostNodes = map[string]int{}
+			}
+			lostNodes[domain]++
+		}
+	}
+	for domain, n := range c.nodes {
+		if n-lostNodes[domain] <= 0 {
+			continue
+		}
+		if _, ok := tg.domains[domain]; !ok {
+			tg.domains[domain] = 0
+			tg.emptyDomains.Insert(domain)
+		}
+	}
+	var lostPods map[string]int32
+	for uid := range t.excludedPods {
+		if domain, ok := c.podDomains[uid]; ok {
+			if lostPods == nil {
+				lostPods = map[string]int32{}
+			}
+			lostPods[domain]++
+		}
+	}
+	for domain, n := range c.pods {
+		if n -= lostPods[domain]; n > 0 {
+			tg.domains[domain] += n
+			tg.emptyDomains.Delete(domain)
+		}
+	}
+}
+
+func (t *Topology) snapshotActive() []*state.StateNode {
+	v, _ := t.nodeSnapshot.Derived(activeNodesKey{}, func() (any, error) { return []*state.StateNode(t.nodeSnapshot.Active()), nil })
+	return v.([]*state.StateNode)
+}
+
+// snapshotExclusions reports whether t.stateNodes are the snapshot's active nodes, in order, with some left out, and
+// records the ones left out.
+func (t *Topology) snapshotExclusions() bool {
+	if t.exclusionsChecked {
+		return t.stateNodesFromActive
+	}
+	t.exclusionsChecked = true
+	j := 0
+	for _, n := range t.snapshotActive() {
+		if j < len(t.stateNodes) && t.stateNodes[j] == n {
+			j++
+			continue
+		}
+		t.excludedSnapshotNodes = append(t.excludedSnapshotNodes, n)
+	}
+	t.stateNodesFromActive = j == len(t.stateNodes)
+	return t.stateNodesFromActive
 }
 
 func (t *Topology) newForTopologies(p *corev1.Pod) []*TopologyGroup {

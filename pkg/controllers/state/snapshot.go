@@ -19,6 +19,7 @@ package state
 import (
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/samber/lo"
@@ -37,6 +38,21 @@ type NodeSnapshot struct {
 	nodes   StateNodes
 	entries map[string]*snapshotEntry
 	info    map[*StateNode]*NodeInfo
+	derived sync.Map
+}
+
+// Derived returns the value stored under key, calling build to compute and store it on first use. A failed build stores
+// nothing. The value is shared by every reader of the snapshot, so callers must not mutate it.
+func (s *NodeSnapshot) Derived(key any, build func() (any, error)) (any, error) {
+	if v, ok := s.derived.Load(key); ok {
+		return v, nil
+	}
+	v, err := build()
+	if err != nil {
+		return nil, err
+	}
+	v, _ = s.derived.LoadOrStore(key, v)
+	return v, nil
 }
 
 type snapshotEntry struct {
