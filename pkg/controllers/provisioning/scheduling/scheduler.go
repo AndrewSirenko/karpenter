@@ -19,6 +19,7 @@ package scheduling
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -862,25 +863,32 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 // snapshot's NodeInfo, computing one for a node not in snap, and never writes to the nodes.
 func (s *Scheduler) calculateExistingNodeClaimsFromSnapshot(ctx context.Context, snap *state.NodeSnapshot, stateNodes []*state.StateNode, daemonSetPods []*corev1.Pod, nodePoolMap map[string]*v1.NodePool, enforceConsolidateAfter bool) {
 	daemons := lo.Reject(daemonSetPods, func(p *corev1.Pod, _ int) bool { return s.shouldSkipDaemonPod(ctx, p) })
-	daemonReqs := lo.Map(daemons, func(p *corev1.Pod, _ int) scheduling.Requirements { return scheduling.NewStrictPodRequirements(p) })
+	var daemonReqs []scheduling.Requirements
+	key := daemonFitKey(daemons)
 	s.existingNodes = make([]*ExistingNode, 0, len(stateNodes))
 	for _, node := range stateNodes {
 		info := snap.Info(node)
 		if info == nil {
 			info = state.NewNodeInfo(node)
 		}
-		var compatible []*corev1.Pod
-		for i, p := range daemons {
-			if scheduling.Taints(info.Taints).ToleratesPod(p) != nil {
-				continue
+		remaining := info.Memo(key, func() any {
+			if daemonReqs == nil {
+				daemonReqs = lo.Map(daemons, func(p *corev1.Pod, _ int) scheduling.Requirements { return scheduling.NewStrictPodRequirements(p) })
 			}
-			if info.LabelRequirements.Compatible(daemonReqs[i]) != nil {
-				continue
+			var compatible []*corev1.Pod
+			for i, p := range daemons {
+				if scheduling.Taints(info.Taints).ToleratesPod(p) != nil {
+					continue
+				}
+				if info.LabelRequirements.Compatible(daemonReqs[i]) != nil {
+					continue
+				}
+				compatible = append(compatible, p)
 			}
-			compatible = append(compatible, p)
-		}
+			return sharedRemainingResources(info, resources.RequestsForPods(compatible...))
+		}).(corev1.ResourceList)
 		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
-		s.existingNodes = append(s.existingNodes, newSharedExistingNode(node, info, s.topology, resources.RequestsForPods(compatible...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		s.existingNodes = append(s.existingNodes, newSharedExistingNode(node, info, s.topology, remaining, s.instanceTypeForNode(node), isUnderConsolidateAfter))
 		if remaining, ok := s.remainingResources[node.Labels()[v1.NodePoolLabelKey]]; ok {
 			s.remainingResources[node.Labels()[v1.NodePoolLabelKey]] = resources.Subtract(remaining, info.Capacity)
 		}
@@ -888,6 +896,19 @@ func (s *Scheduler) calculateExistingNodeClaimsFromSnapshot(ctx context.Context,
 	if !sharedNodesSorted(s.existingNodes) {
 		s.sortExistingNodes()
 	}
+}
+
+// daemonFitKey identifies everything about daemons that decides which of them fit a node and what they request.
+func daemonFitKey(daemons []*corev1.Pod) string {
+	type fit struct {
+		Requests     corev1.ResourceList
+		Tolerations  []corev1.Toleration
+		NodeSelector map[string]string
+		Affinity     *corev1.Affinity
+	}
+	return string(lo.Must(json.Marshal(lo.Map(daemons, func(p *corev1.Pod, _ int) fit {
+		return fit{Requests: resources.RequestsForPods(p), Tolerations: p.Spec.Tolerations, NodeSelector: p.Spec.NodeSelector, Affinity: p.Spec.Affinity}
+	}))))
 }
 
 // sharedNodesSorted reports whether nodes built by newSharedExistingNode are already in sortExistingNodes order.
