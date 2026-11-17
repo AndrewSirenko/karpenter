@@ -58,6 +58,7 @@ type consolidation struct {
 	cloudProvider          cloudprovider.CloudProvider
 	recorder               events.Recorder
 	lastConsolidationState time.Time
+	nodePoolTotals         map[string]NodePoolTotals
 	// evaluator is initialized non-nil at construction. SetNodePoolTotals
 	// replaces it with a balancedEvaluator carrying the new totals.
 	evaluator Evaluator
@@ -69,6 +70,7 @@ type NodePoolTotalsSetter interface {
 }
 
 func (c *consolidation) SetNodePoolTotals(totals map[string]NodePoolTotals) {
+	c.nodePoolTotals = totals
 	c.evaluator = NewBalancedEvaluator(totals, c.recorder)
 }
 
