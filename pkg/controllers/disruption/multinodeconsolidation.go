@@ -25,24 +25,31 @@ import (
 
 	"github.com/awslabs/operatorpkg/option"
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
+	nodepoolutils "sigs.k8s.io/karpenter/pkg/utils/nodepool"
+	"sigs.k8s.io/karpenter/pkg/utils/pdb"
+	"sigs.k8s.io/karpenter/pkg/utils/resources"
 )
 
 const MultiNodeConsolidationTimeoutDuration = 1 * time.Minute
 
 type MultiNodeConsolidation struct {
 	consolidation
-	validator Validator
+	validator         Validator
+	skipCapacityBound bool
 }
 
 func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOptions]) *MultiNodeConsolidation {
 	o := option.Resolve(append([]option.Function[MethodOptions]{WithValidator(NewMultiConsolidationValidator(c))}, opts...)...)
 	return &MultiNodeConsolidation{
-		consolidation: c,
-		validator:     o.validator,
+		consolidation:     c,
+		validator:         o.validator,
+		skipCapacityBound: o.skipCapacityBound,
 	}
 }
 
@@ -119,6 +126,13 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	if len(candidates) <= max {
 		max = len(candidates) - 1
 	}
+	bound := max + 1
+	if !m.skipCapacityBound {
+		// Every probe holds at least 2 candidates, so if 2 don't fit, every probe would fail.
+		if bound = m.maxFittingPrefix(ctx, candidates[:max+1]); bound < 2 {
+			return Command{}, nil, nil
+		}
+	}
 
 	lastSavedCommand := Command{}
 	var lastSavedPerPool map[string]ScoreResult
@@ -131,6 +145,11 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	defer cancel()
 	for min <= max {
 		mid := (min + max) / 2
+		// A prefix past the bound can't fit by resource totals, so its simulation would fail.
+		if mid+1 > bound {
+			max = mid - 1
+			continue
+		}
 		candidatesToConsolidate := candidates[0 : mid+1]
 
 		// Pass the timeout context to ensure sub-operations can be canceled
@@ -184,6 +203,95 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 		m.evaluator.EmitMultiNodeEvents(ctx, lastRejectedCmd, lastRejectedPerPool, false)
 	}
 	return lastSavedCommand, lastSavedPerPool, nil
+}
+
+// maxFittingPrefix returns the largest k such that the cpu, memory and pod requests of the pods simulation would
+// reschedule from candidates[0:k] fit in the free allocatable of every node outside the prefix plus the largest
+// instance type one replacement could use. A prefix that doesn't fit can't schedule, so it isn't worth simulating.
+// Everything it ignores (constraints, fragmentation, other resources) only loosens the bound.
+func (m *MultiNodeConsolidation) maxFittingPrefix(ctx context.Context, candidates []*Candidate) int {
+	replacement, err := m.largestReplacement(ctx)
+	if err != nil {
+		return len(candidates)
+	}
+	pdbs, err := pdb.NewLimits(ctx, m.kubeClient)
+	if err != nil {
+		return len(candidates)
+	}
+	// Predicted requests can be lower than a pod's own, so only its pod count is a sound demand.
+	countOnly := options.FromContext(ctx).FeatureGates.PredictionEnabled
+	free := map[string]capacity{}
+	var supply capacity
+	for n := range m.cluster.Nodes() {
+		f := capacityOf(n.Available()).atLeastZero()
+		free[n.Name()] = free[n.Name()].add(f)
+		supply = supply.add(f)
+	}
+	var demand capacity
+	for i, c := range candidates {
+		supply = supply.sub(free[c.Name()])
+		delete(free, c.Name())
+		for _, p := range c.reschedulablePods {
+			if !pdbs.IsCurrentlyReschedulable(p, m.clock, nil) {
+				continue
+			}
+			r := capacityOf(resources.RequestsForPods(p))
+			if countOnly {
+				r = capacity{pods: r.pods}
+			}
+			demand = demand.add(r)
+		}
+		if !demand.fits(supply.add(replacement)) {
+			return i
+		}
+	}
+	return len(candidates)
+}
+
+// largestReplacement is the per-resource max allocatable over every instance type of every NodePool.
+func (m *MultiNodeConsolidation) largestReplacement(ctx context.Context) (capacity, error) {
+	nodePools, err := nodepoolutils.ListManaged(ctx, m.kubeClient, m.cloudProvider)
+	if err != nil {
+		return capacity{}, err
+	}
+	var out capacity
+	for _, np := range nodePools {
+		its, err := m.cloudProvider.GetInstanceTypes(ctx, np)
+		if err != nil {
+			return capacity{}, err
+		}
+		for _, it := range its {
+			for _, g := range it.AllocatableOfferingsList() {
+				out = out.max(capacityOf(g.Allocatable))
+			}
+		}
+	}
+	return out, nil
+}
+
+// capacity is cpu in millicores, memory in bytes and a pod count.
+type capacity struct{ cpu, memory, pods int64 }
+
+func capacityOf(l corev1.ResourceList) capacity {
+	return capacity{cpu: l.Cpu().MilliValue(), memory: l.Memory().Value(), pods: l.Pods().Value()}
+}
+
+func (c capacity) add(o capacity) capacity {
+	return capacity{c.cpu + o.cpu, c.memory + o.memory, c.pods + o.pods}
+}
+
+func (c capacity) sub(o capacity) capacity {
+	return capacity{c.cpu - o.cpu, c.memory - o.memory, c.pods - o.pods}
+}
+
+func (c capacity) max(o capacity) capacity {
+	return capacity{max(c.cpu, o.cpu), max(c.memory, o.memory), max(c.pods, o.pods)}
+}
+
+func (c capacity) atLeastZero() capacity { return c.max(capacity{}) }
+
+func (c capacity) fits(in capacity) bool {
+	return c.cpu <= in.cpu && c.memory <= in.memory && c.pods <= in.pods
 }
 
 // filterOutSameInstanceType filters out instance types that are more expensive than the cheapest instance type that is being
