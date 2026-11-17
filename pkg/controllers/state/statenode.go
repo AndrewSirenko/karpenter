@@ -199,6 +199,9 @@ type StateNode struct {
 
 	// repairPolicyMatches are the repair policies matching the Node's conditions, recomputed when they change.
 	repairPolicyMatches []health.RepairPolicyMatch
+
+	// gen is the Cluster.nodesVersion of the last write to this node. Zero means never stamped.
+	gen uint64
 }
 
 func NewNode() *StateNode {
