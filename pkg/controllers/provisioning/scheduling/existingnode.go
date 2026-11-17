@@ -48,6 +48,8 @@ type ExistingNode struct {
 	info          *state.NodeInfo
 	hostPortUsage *scheduling.HostPortUsage
 	volumeUsage   *scheduling.VolumeUsage
+	// sharedRemaining means remainingResources is shared with other schedulers and is copied before the first write.
+	sharedRemaining bool
 }
 
 func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
@@ -85,7 +87,7 @@ func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, 
 }
 
 // newSharedExistingNode is NewExistingNode for a node of a shared snapshot. It reads n and info but never writes them.
-func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *Topology, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
+func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *Topology, remaining v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
 	node := &ExistingNode{
 		StateNode:               n,
 		info:                    info,
@@ -95,6 +97,8 @@ func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *T
 		requirements:            info.Requirements,
 		isUnderConsolidateAfter: isUnderConsolidateAfter,
 		instanceType:            instanceType,
+		remainingResources:      remaining,
+		sharedRemaining:         true,
 	}
 	if instanceType != nil {
 		for driver, limit := range instanceType.VolumeAttachmentLimits {
@@ -103,6 +107,13 @@ func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *T
 			}
 		}
 	}
+	topology.Register(v1.LabelHostname, info.HostName)
+	return node
+}
+
+// sharedRemainingResources is the remainingResources newSharedExistingNode starts from: the node's available resources
+// minus the daemonResources not yet scheduled to it.
+func sharedRemainingResources(info *state.NodeInfo, daemonResources v1.ResourceList) v1.ResourceList {
 	resources.SubtractFrom(daemonResources, info.DaemonSetRequests)
 	for k, v := range daemonResources {
 		if v.AsApproximateFloat64() < 0 {
@@ -110,9 +121,7 @@ func newSharedExistingNode(n *state.StateNode, info *state.NodeInfo, topology *T
 			daemonResources[k] = v
 		}
 	}
-	node.remainingResources = resources.Subtract(info.Available, daemonResources)
-	topology.Register(v1.LabelHostname, info.HostName)
-	return node
+	return resources.Subtract(info.Available, daemonResources)
 }
 
 // HostPortUsage returns the node's host port usage including pods added by this scheduler.
@@ -248,6 +257,14 @@ func (n *ExistingNode) tryVolumeAlternative(pod *v1.Pod, podData *PodData, baseR
 func (n *ExistingNode) Add(ctx context.Context, pod *v1.Pod, podData *PodData, nodeRequirements scheduling.Requirements, volumes scheduling.Volumes, allocationResult *dynamicresources.AllocationResult) {
 	// Update node
 	n.Pods = append(n.Pods, pod)
+	if n.sharedRemaining {
+		remaining := make(v1.ResourceList, len(n.remainingResources))
+		for k, q := range n.remainingResources {
+			remaining[k] = q.DeepCopy()
+		}
+		n.remainingResources = remaining
+		n.sharedRemaining = false
+	}
 	resources.SubtractFrom(n.remainingResources, podData.Requests)
 	n.requirements = nodeRequirements
 	n.topology.Record(pod, n.cachedTaints, nodeRequirements)

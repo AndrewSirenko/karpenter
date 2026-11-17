@@ -19,6 +19,7 @@ package state
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -62,6 +63,25 @@ type NodeInfo struct {
 	Available         corev1.ResourceList
 	Capacity          corev1.ResourceList
 	DaemonSetRequests corev1.ResourceList
+
+	memo atomic.Pointer[nodeMemo]
+}
+
+type nodeMemo struct {
+	key string
+	val any
+}
+
+// Memo returns the value last built for key, calling build when key differs from the last one. It keeps one value per
+// node, and the value lives as long as the NodeInfo, which a snapshot reuses until the node changes. build must return
+// a value that callers only read.
+func (i *NodeInfo) Memo(key string, build func() any) any {
+	if m := i.memo.Load(); m != nil && m.key == key {
+		return m.val
+	}
+	m := &nodeMemo{key: key, val: build()}
+	i.memo.Store(m)
+	return m.val
 }
 
 // NewNodeInfo computes the NodeInfo for n.
