@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -102,9 +103,18 @@ type options struct {
 	// disruption candidate will free when it is terminated. Used by the terminate-first "would the pods fit once the
 	// slot is freed?" pass.
 	creditReservationCapacity map[string]int
+	nodeSnapshot              *state.NodeSnapshot
 }
 
 type Options = option.Function[options]
+
+// WithNodeSnapshot tells the scheduler that its state nodes come from snap. The scheduler then reuses the snapshot's
+// derived node values and never writes to the nodes, so many schedulers may share one snapshot concurrently.
+var WithNodeSnapshot = func(snap *state.NodeSnapshot) Options {
+	return func(opts *options) {
+		opts.nodeSnapshot = snap
+	}
+}
 
 var DisableReservedCapacityFallback = func(opts *options) {
 	opts.reservedOfferingMode = ReservedOfferingModeStrict
@@ -241,6 +251,10 @@ func NewScheduler(
 		}
 	}
 	s.deletingNodeNames = deletingNodeNames
+	if resolved.nodeSnapshot != nil {
+		s.calculateExistingNodeClaimsFromSnapshot(ctx, resolved.nodeSnapshot, stateNodes, daemonSetPods, nodeToNodePool, resolved.enforceConsolidateAfter)
+		return s
+	}
 	s.calculateExistingNodeClaims(ctx, stateNodes, daemonSetPods, nodeToNodePool, resolved.enforceConsolidateAfter)
 	return s
 }
@@ -842,6 +856,48 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 		s.updateRemainingResources(node)
 	}
 	s.sortExistingNodes()
+}
+
+// calculateExistingNodeClaimsFromSnapshot is calculateExistingNodeClaims over shared snapshot nodes. It reuses the
+// snapshot's NodeInfo, computing one for a node not in snap, and never writes to the nodes.
+func (s *Scheduler) calculateExistingNodeClaimsFromSnapshot(ctx context.Context, snap *state.NodeSnapshot, stateNodes []*state.StateNode, daemonSetPods []*corev1.Pod, nodePoolMap map[string]*v1.NodePool, enforceConsolidateAfter bool) {
+	daemons := lo.Reject(daemonSetPods, func(p *corev1.Pod, _ int) bool { return s.shouldSkipDaemonPod(ctx, p) })
+	daemonReqs := lo.Map(daemons, func(p *corev1.Pod, _ int) scheduling.Requirements { return scheduling.NewStrictPodRequirements(p) })
+	s.existingNodes = make([]*ExistingNode, 0, len(stateNodes))
+	for _, node := range stateNodes {
+		info := snap.Info(node)
+		if info == nil {
+			info = state.NewNodeInfo(node)
+		}
+		var compatible []*corev1.Pod
+		for i, p := range daemons {
+			if scheduling.Taints(info.Taints).ToleratesPod(p) != nil {
+				continue
+			}
+			if info.LabelRequirements.Compatible(daemonReqs[i]) != nil {
+				continue
+			}
+			compatible = append(compatible, p)
+		}
+		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
+		s.existingNodes = append(s.existingNodes, newSharedExistingNode(node, info, s.topology, resources.RequestsForPods(compatible...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		if remaining, ok := s.remainingResources[node.Labels()[v1.NodePoolLabelKey]]; ok {
+			s.remainingResources[node.Labels()[v1.NodePoolLabelKey]] = resources.Subtract(remaining, info.Capacity)
+		}
+	}
+	if !sharedNodesSorted(s.existingNodes) {
+		s.sortExistingNodes()
+	}
+}
+
+// sharedNodesSorted reports whether nodes built by newSharedExistingNode are already in sortExistingNodes order.
+func sharedNodesSorted(nodes []*ExistingNode) bool {
+	return slices.IsSortedFunc(nodes, func(a, b *ExistingNode) int {
+		if a.info.Initialized != b.info.Initialized {
+			return lo.Ternary(a.info.Initialized, -1, 1)
+		}
+		return strings.Compare(a.info.Name, b.info.Name)
+	})
 }
 
 // getCompatibleDaemonPods filters daemon pods that can schedule to the given node
