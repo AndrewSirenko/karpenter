@@ -33,9 +33,12 @@ import (
 
 const MultiNodeConsolidationTimeoutDuration = 1 * time.Minute
 
+var probeMaxFirst = true
+
 type MultiNodeConsolidation struct {
 	consolidation
-	validator Validator
+	validator  Validator
+	lastHitMax bool
 }
 
 func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOptions]) *MultiNodeConsolidation {
@@ -129,8 +132,14 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	// Set a timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, MultiNodeConsolidationTimeoutDuration)
 	defer cancel()
+	probeMax := probeMaxFirst && m.lastHitMax
+	m.lastHitMax = false
+	longest := max + 1
 	for min <= max {
 		mid := (min + max) / 2
+		if probeMax {
+			mid, probeMax = max, false
+		}
 		candidatesToConsolidate := candidates[0 : mid+1]
 
 		// Pass the timeout context to ensure sub-operations can be canceled
@@ -172,6 +181,7 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 		if validDecision {
 			// We can consolidate NodeClaims [0,mid]
 			lastSavedCommand = cmd
+			m.lastHitMax = mid+1 == longest
 			min = mid + 1
 		} else {
 			max = mid - 1
