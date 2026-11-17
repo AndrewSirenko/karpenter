@@ -17,10 +17,13 @@ limitations under the License.
 package disruption
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/awslabs/operatorpkg/option"
@@ -36,6 +39,59 @@ const MultiNodeConsolidationTimeoutDuration = 1 * time.Minute
 type MultiNodeConsolidation struct {
 	consolidation
 	validator Validator
+	search    *multiNodeSearch
+	// probesBeforeTimeout makes the search time out after this many probes per call. Zero disables it. Test only.
+	probesBeforeTimeout int
+}
+
+// multiNodeSearch is a binary search that timed out before finding a valid command. The next call continues it if
+// the key still matches.
+type multiNodeSearch struct {
+	key                 multiNodeSearchKey
+	order               []string
+	min, max            int
+	lastRejected        Command
+	lastRejectedPerPool map[string]ScoreResult
+}
+
+type multiNodeSearchKey struct {
+	state       time.Time
+	providerIDs []string
+	budgets     map[string]int
+	totals      map[string]NodePoolTotals
+}
+
+func (k multiNodeSearchKey) equal(o multiNodeSearchKey) bool {
+	return k.state.Equal(o.state) && slices.Equal(k.providerIDs, o.providerIDs) && maps.Equal(k.budgets, o.budgets) &&
+		maps.EqualFunc(k.totals, o.totals, func(a, b NodePoolTotals) bool {
+			return closeTo(a.TotalCost, b.TotalCost) && closeTo(a.TotalDisruptionCost, b.TotalDisruptionCost)
+		})
+}
+
+// closeTo tolerates float sums that differ only in summation order, since totals are summed in map order.
+func closeTo(a, b float64) bool {
+	return math.Abs(a-b) <= 1e-9*math.Max(math.Abs(a), math.Abs(b))
+}
+
+// restoreOrder returns candidates in the saved search's order if that order is still a valid sort of them. The sort
+// is unstable and candidates arrive in map order, so ties would otherwise reorder on every call.
+func (s *multiNodeSearch) restoreOrder(candidates []*Candidate) []*Candidate {
+	if s == nil || len(s.order) != len(candidates) {
+		return candidates
+	}
+	byID := lo.SliceToMap(candidates, func(c *Candidate) (string, *Candidate) { return c.ProviderID(), c })
+	restored := make([]*Candidate, 0, len(candidates))
+	for _, id := range s.order {
+		c, ok := byID[id]
+		if !ok {
+			return candidates
+		}
+		restored = append(restored, c)
+	}
+	if !slices.IsSortedFunc(restored, func(a, b *Candidate) int { return cmp.Compare(b.SavingsRatio(), a.SavingsRatio()) }) {
+		return candidates
+	}
+	return restored
 }
 
 func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOptions]) *MultiNodeConsolidation {
@@ -48,9 +104,12 @@ func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOp
 
 func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
 	if m.IsConsolidated() {
+		m.search = nil
 		return []Command{}, nil
 	}
-	candidates = m.sortCandidates(ctx, candidates)
+	key := multiNodeSearchKey{state: m.cluster.ConsolidationState(), budgets: maps.Clone(disruptionBudgetMapping), totals: m.nodePoolTotals}
+	candidates = m.search.restoreOrder(m.sortCandidates(ctx, candidates))
+	order := lo.Map(candidates, func(c *Candidate, _ int) string { return c.ProviderID() })
 
 	// In order, filter out all candidates that would violate the budget.
 	// Since multi-node consolidation relies on the ordering of
@@ -77,16 +136,20 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	// This could be further configurable in the future.
 	maxParallel := lo.Clamp(len(disruptableCandidates), 0, 100)
 
-	cmd, perPoolResults, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel)
+	key.providerIDs = lo.Map(disruptableCandidates, func(c *Candidate, _ int) string { return c.ProviderID() })
+	cmd, perPoolResults, err := m.firstNConsolidationOption(ctx, key, disruptableCandidates, maxParallel)
 	if err != nil {
 		return []Command{}, err
+	}
+	if m.search != nil {
+		m.search.order = order
 	}
 
 	if cmd.Decision() == NoOpDecision {
 		// if there are no candidates because of a budget, don't mark
 		// as consolidated, as it's possible it should be consolidatable
 		// the next time we try to disrupt.
-		if !constrainedByBudgets {
+		if !constrainedByBudgets && m.search == nil {
 			m.markConsolidated()
 		}
 		return []Command{}, nil
@@ -110,7 +173,12 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 
 // firstNConsolidationOption looks at the first N NodeClaims to determine if they can all be consolidated at once.  The
 // NodeClaims are sorted by increasing disruption order which correlates to likelihood of being able to consolidate the node
-func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, candidates []*Candidate, max int) (Command, map[string]ScoreResult, error) {
+//
+// A search that times out before finding a valid command is saved and continued by the next call with the same cluster
+// state, candidates, budgets and NodePool totals, so a search too slow for one call can still finish.
+func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, key multiNodeSearchKey, candidates []*Candidate, max int) (Command, map[string]ScoreResult, error) {
+	search := m.search
+	m.search = nil
 	// we always operate on at least two NodeClaims at once, for single NodeClaims standard consolidation will find all solutions
 	if len(candidates) < 2 {
 		return Command{}, nil, nil
@@ -126,21 +194,36 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	// duplicate emissions.
 	var lastRejectedCmd Command
 	var lastRejectedPerPool map[string]ScoreResult
+	if search != nil && search.key.equal(key) {
+		min, max = search.min, search.max
+		lastRejectedCmd, lastRejectedPerPool = search.lastRejected, search.lastRejectedPerPool
+		log.FromContext(ctx).V(1).Info("resuming multi-node consolidation after timeout", "min_batch_size", min+1, "max_batch_size", max+1)
+	}
 	// Set a timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, MultiNodeConsolidationTimeoutDuration)
 	defer cancel()
-	for min <= max {
+	for probes := 0; min <= max; probes++ {
 		mid := (min + max) / 2
 		candidatesToConsolidate := candidates[0 : mid+1]
 
+		probeCtx := timeoutCtx
+		if m.probesBeforeTimeout > 0 && probes >= m.probesBeforeTimeout {
+			var expire context.CancelFunc
+			probeCtx, expire = context.WithDeadline(timeoutCtx, time.Time{})
+			defer expire()
+		}
 		// Pass the timeout context to ensure sub-operations can be canceled
-		cmd, err := m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
+		cmd, err := m.computeConsolidation(probeCtx, candidatesToConsolidate...)
 		// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: m.ConsolidationType()})
 				if lastSavedCommand.Candidates == nil {
 					log.FromContext(ctx).V(1).Info("failed to find a multi-node consolidation after timeout", "last_batch_size", (min+max)/2)
+					m.search = &multiNodeSearch{
+						key: key, min: min, max: max,
+						lastRejected: lastRejectedCmd, lastRejectedPerPool: lastRejectedPerPool,
+					}
 					return Command{}, nil, nil
 				}
 				log.FromContext(ctx).V(1).WithValues(lastSavedCommand.LogValues()...).Info("stopping multi-node consolidation after timeout, returning last valid command")
