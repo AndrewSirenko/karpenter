@@ -16,10 +16,17 @@ limitations under the License.
 
 package disruption
 
+import "context"
+
 // SetSimulateFromSnapshot switches SimulateScheduling between the shared snapshot and per-call deep copies, and
 // returns a func that restores the previous mode.
 func SetSimulateFromSnapshot(v bool) func() {
 	prev := simulateFromSnapshot
 	simulateFromSnapshot = v
 	return func() { simulateFromSnapshot = prev }
+}
+
+// ComputeSorted runs single-node consolidation over candidates already in SortCandidates order.
+func (s *SingleNodeConsolidation) ComputeSorted(ctx context.Context, budgets map[string]int, candidates []*Candidate) ([]Command, error) {
+	return s.computeSorted(ctx, budgets, candidates)
 }

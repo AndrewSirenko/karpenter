@@ -54,40 +54,64 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		return []Command{}, nil
 	}
 	candidates = s.SortCandidates(ctx, candidates)
+	return s.computeSorted(ctx, disruptionBudgetMapping, candidates)
+}
 
+// computeSorted returns the first valid command in candidate order. With parallelism above 1 it simulates the next
+// candidates ahead of time, but consumes results, events and approvals in candidate order, so it returns what the
+// sequential walk would.
+func (s *SingleNodeConsolidation) computeSorted(ctx context.Context, disruptionBudgetMapping map[string]int, candidates []*Candidate) ([]Command, error) {
 	// Set a timeout
 	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
 	constrainedByBudgets := false
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)
 
-	for i, candidate := range candidates {
-		if s.clock.Now().After(timeout) {
-			ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: s.ConsolidationType()})
-			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
+	workers := s.parallelism(ctx)
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var inflight []chan probeResult
+	next := 0
+	timedOutAt := -1
+	for {
+		for timedOutAt < 0 && next < len(candidates) && len(inflight) < workers {
+			if s.clock.Now().After(timeout) {
+				timedOutAt = next
+				break
+			}
+			candidate := candidates[next]
+			next++
+			// Track that we've seen this nodepool
+			unseenNodePools.Delete(candidate.NodePool.Name)
 
-			s.PreviouslyUnseenNodePools = unseenNodePools
-
-			return []Command{}, nil
+			// If the disruption budget doesn't allow this candidate to be disrupted,
+			// continue to the next candidate. We don't need to decrement any budget
+			// counter since single node consolidation commands can only have one candidate.
+			if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
+				constrainedByBudgets = true
+				continue
+			}
+			// Skip candidates whose best-case score (delete ratio) cannot pass the
+			// threshold. A DELETE is the upper bound; if it fails, no REPLACE will.
+			if !s.evaluator.CanPassThreshold(candidate) {
+				continue
+			}
+			done := make(chan probeResult, 1)
+			if workers == 1 {
+				cmd, err := s.computeConsolidation(ctx, candidate)
+				done <- probeResult{cmd: cmd, err: err}
+			} else {
+				go func() { done <- s.probe(probeCtx, candidate) }()
+			}
+			inflight = append(inflight, done)
 		}
-		// Track that we've seen this nodepool
-		unseenNodePools.Delete(candidate.NodePool.Name)
-
-		// If the disruption budget doesn't allow this candidate to be disrupted,
-		// continue to the next candidate. We don't need to decrement any budget
-		// counter since single node consolidation commands can only have one candidate.
-		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
-			constrainedByBudgets = true
-			continue
+		if len(inflight) == 0 {
+			break
 		}
-		// Skip candidates whose best-case score (delete ratio) cannot pass the
-		// threshold. A DELETE is the upper bound; if it fails, no REPLACE will pass.
-		if !s.evaluator.CanPassThreshold(candidate) {
-			continue
-		}
-
-		// compute a possible consolidation option
-		cmd, err := s.computeConsolidation(ctx, candidate)
+		r := <-inflight[0]
+		inflight = inflight[1:]
+		r.publish(s.recorder)
+		cmd, err := r.cmd, r.err
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
@@ -99,6 +123,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		if approved, _ := s.evaluator.ApproveCommand(ctx, cmd); !approved {
 			continue
 		}
+		cancel()
 		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
 			if IsValidationError(err) {
 				reason := getValidationFailureReason(err)
@@ -108,6 +133,15 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			return []Command{}, fmt.Errorf("validating consolidation, %w", err)
 		}
 		return []Command{cmd}, nil
+	}
+
+	if timedOutAt >= 0 {
+		ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: s.ConsolidationType()})
+		log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", timedOutAt)
+
+		s.PreviouslyUnseenNodePools = unseenNodePools
+
+		return []Command{}, nil
 	}
 
 	if !constrainedByBudgets {
