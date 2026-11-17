@@ -58,7 +58,8 @@ const (
 )
 
 type MethodOptions struct {
-	validator Validator
+	validator         Validator
+	skipCapacityBound bool
 }
 
 func WithValidator(v Validator) option.Function[MethodOptions] {
