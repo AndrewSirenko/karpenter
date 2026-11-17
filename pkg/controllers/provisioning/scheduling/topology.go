@@ -363,7 +363,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 	// simultaneously)
 	var pods []corev1.Pod
 	for _, ns := range tg.namespaces.UnsortedList() {
-		if err := t.kubeClient.List(ctx, podList, TopologyListOptions(ns, tg.rawSelector)); err != nil {
+		if err := t.kubeClient.List(ctx, podList, TopologyListOptions(ns, tg.rawSelector), client.UnsafeDisableDeepCopy); err != nil {
 			return fmt.Errorf("listing pods, %w", err)
 		}
 		pods = append(pods, podList.Items...)
@@ -415,7 +415,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			nodeRequirements = previousNodeRequirements
 		} else {
 			node = &corev1.Node{}
-			if err := t.kubeClient.Get(ctx, types.NamespacedName{Name: p.Spec.NodeName}, node); err != nil {
+			if err := t.kubeClient.Get(ctx, types.NamespacedName{Name: p.Spec.NodeName}, node, client.UnsafeDisableDeepCopy); err != nil {
 				// Pods that cannot be evicted can be leaked in the API Server after
 				// a Node is removed. Since pod bindings are immutable, these pods
 				// cannot be recovered, and will be deleted by the pod lifecycle
@@ -549,7 +549,7 @@ func (t *Topology) buildNamespaceList(ctx context.Context, namespace string, nam
 	if err != nil {
 		return nil, fmt.Errorf("parsing selector, %w", err)
 	}
-	if err := t.kubeClient.List(ctx, &namespaceList, &client.ListOptions{LabelSelector: labelSelector}); err != nil {
+	if err := t.kubeClient.List(ctx, &namespaceList, &client.ListOptions{LabelSelector: labelSelector}, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, fmt.Errorf("listing namespaces, %w", err)
 	}
 	selected := sets.New[string]()
