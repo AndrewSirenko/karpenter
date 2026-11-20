@@ -445,6 +445,7 @@ func (p *Provisioner) Schedule(ctx context.Context) (scheduler.Results, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
+	pods = p.dropReplacedPods(ctx, pods, deletingPodUIDs, nodes.Deleting())
 	results, err := s.Solve(timeoutCtx, pods)
 	// context errors are ignored because we want to finish provisioning for what has already been scheduled
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
@@ -609,6 +610,26 @@ func validateKarpenterManagedLabelCanExist(p *corev1.Pod) error {
 // getVolumeTopologyRequirements collects volume topology requirements for each pod
 // WITHOUT modifying the pods. These requirements will be added to nodeRequirements
 // (for NodeClaim zone selection) but NOT to pod affinities (for correct TSC counting).
+func (p *Provisioner) dropReplacedPods(ctx context.Context, pods []*corev1.Pod, deletingPodUIDs sets.Set[types.UID], deletingNodes state.StateNodes) []*corev1.Pod {
+	deletingNodeNames := sets.New(lo.FilterMap(deletingNodes, func(n *state.StateNode, _ int) (string, bool) {
+		return lo.FromPtr(n.Node).Name, n.Node != nil
+	})...)
+	return lo.Reject(pods, func(pod *corev1.Pod, _ int) bool {
+		if !deletingPodUIDs.Has(pod.UID) {
+			return false
+		}
+		current := &corev1.Pod{}
+		if err := p.kubeClient.Get(ctx, client.ObjectKeyFromObject(pod), current); err != nil {
+			return false
+		}
+		if current.UID == pod.UID || current.Spec.NodeName == "" || deletingNodeNames.Has(current.Spec.NodeName) {
+			return false
+		}
+		log.FromContext(ctx).V(1).WithValues("Pod", klog.KObj(pod), "Node", klog.KRef("", current.Spec.NodeName)).Info("ignoring pod, replacement already bound")
+		return true
+	})
+}
+
 func (p *Provisioner) getVolumeTopologyRequirements(ctx context.Context, pods []*corev1.Pod) ([]*corev1.Pod, map[types.UID][]scheduling.Requirements, error) {
 	var schedulablePods []*corev1.Pod
 	volumeReqs := make(map[types.UID][]scheduling.Requirements)
