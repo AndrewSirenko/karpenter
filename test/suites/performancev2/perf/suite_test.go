@@ -42,8 +42,8 @@ func TestPerf(t *testing.T) {
 var scenario = perf.Scenario{
 	Name:     "pods",
 	Question: "How fast do pods become Ready?",
-	Vectors: map[perf.Vector]int{perf.VectorPods: 1000},
-	Phases:  []perf.PhaseSpec{{Name: "scaleOut"}, {Name: "consolidation"}},
+	Vectors:  map[perf.Vector]int{perf.VectorPods: 1000},
+	Phases:   []perf.PhaseSpec{{Name: "scaleOut"}, {Name: "consolidation"}},
 }
 
 func evidence(median, cv float64, variants map[string]float64) perf.MetricEvidence {
