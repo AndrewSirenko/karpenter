@@ -72,6 +72,7 @@ func KWOK(c env.Clients) *perf.Provider {
 		// utilization). Stable only where cmd/inventory's evidence check passes. Heap baselines moved 24-33% between the October and November EKS runs, and October's
 		// core reproduces the November numbers, so the environment moved, not core. Heap stays Experimental until it
 		// holds across environments.
+		Sizes: map[string]map[perf.Vector]int{"topologyHostname": {perf.VectorPods: 2000}},
 		Catalog: perf.Catalog{
 			Zones:        [][]string{{"test-zone-a"}, {"test-zone-b"}, {"test-zone-c"}, {"test-zone-d"}, {"test-zone-a", "test-zone-b"}},
 			Arches:       []string{v1.ArchitectureAmd64, v1.ArchitectureArm64},
