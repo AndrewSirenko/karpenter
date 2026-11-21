@@ -36,6 +36,8 @@ var migrated = []scenarioLevels{
 	podsBalancedLevels,
 	podsBalancedChurnLevels,
 	podsBalancedHeterogeneousLevels,
+	nodepoolsDiverseLevels,
+	nodepoolsTargetedLevels,
 }
 
 // withMigrated adds every migrated scenario's levels, picked by pick, to base.
