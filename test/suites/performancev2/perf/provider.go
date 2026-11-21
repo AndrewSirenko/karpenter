@@ -63,6 +63,9 @@ type Provider struct {
 	// or family-restricted NodePools. Scenarios skip a dimension left empty, and a scenario that can't run without
 	// one says so in Scenario.Requires.
 	Catalog     Catalog
+	// Skip opts the provider out of scenarios, by name, with the reason. Every other scenario runs, measured only
+	// where Levels sets nothing.
+	Skip        map[string]string
 	Levels      Levels
 	Calibration *Calibration
 }

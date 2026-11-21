@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/karpenter/test/suites/performancev2/perf/scenarios"
 )
 
-// Every shared scenario runs on both core providers, so one that's missing its levels (and would skip as "off")
-// fails here, and the perf-periodic matrix, built from cmd/inventory -list kwok-ci, covers it.
+// Every shared scenario runs on both core providers, so one a core provider skips fails here, and the
+// perf-periodic matrix, built from cmd/inventory -list kwok-ci, covers it.
 func TestCoreProvidersEnableEveryScenario(t *testing.T) {
 	all := lo.Map(scenarios.All, func(s perf.Scenario, _ int) string { return s.Name })
 	for _, p := range []*perf.Provider{performancev2.KWOK(env.Clients{}), performancev2.KWOKCI(env.Clients{})} {

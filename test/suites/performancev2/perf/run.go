@@ -48,13 +48,20 @@ const ScenarioLabel = "perf.karpenter.sh/scenario"
 // Scenario is a provider-agnostic workload along one vector. Summary and the phase summaries say what it
 // stresses and why; what each metric means comes from the Metric, so alarms and the inventory are generated.
 type Scenario struct {
-	Name    string
+	Name string
+	// Question is the customer question the scenario answers, in a customer's words. Validate requires it, and the
+	// inventory, alarms and bounds table lead with it.
+	Question string
+	// Group sorts a variant under the scenario it varies (for example "nodepools" for diverseNodePools), so the
+	// inventory and README list one row per customer question with its variants under it. Empty means the scenario
+	// is its own group. A variant is a full scenario: it can change anything.
+	Group   string
 	Summary string
 	Vectors map[Vector]int
 	Sweep   map[Vector][]int
 	Phases  []PhaseSpec
-	// Requires reports why a provider can't run the scenario, for example a Catalog dimension it needs. Validate
-	// fails a provider that enables a scenario it can't run, so the gap shows in cmd/inventory rather than as a skip.
+	// Requires reports why a provider can't run the scenario, for example a Catalog dimension it needs. The scenario
+	// is then skipped for that provider with the reason, which cmd/inventory lists.
 	Requires func(*Provider) error
 	Run      func(*Run)
 }
@@ -215,14 +222,18 @@ func (r *Run) Patch(o client.Object, mutate func()) {
 	GinkgoHelper()
 	base := o.DeepCopyObject().(client.Object)
 	mutate()
-	Expect(r.Provider.Client.Patch(r.ctx, o, client.MergeFrom(base))).To(Succeed())
+	patch := client.MergeFrom(base)
+	data, err := patch.Data(o)
+	Expect(err).ToNot(HaveOccurred())
+	Expect(string(data)).ToNot(Equal("{}"), "Patch of %s changed nothing", client.ObjectKeyFromObject(o))
+	Expect(r.Provider.Client.Patch(r.ctx, o, patch)).To(Succeed())
 }
 
 // AwaitHealthyPods waits for the scenario to have exactly n healthy pods without ending a phase, for scenarios that
 // change the workload several times inside one phase.
 func (r *Run) AwaitHealthyPods(n int, timeout time.Duration) {
 	GinkgoHelper()
-	r.awaitHealthyPods(n, r.timeout(timeout))
+	Expect(r.awaitHealthyPods(n, r.timeout(timeout))).To(Succeed())
 }
 
 // Replicas is the scenario's pod count: the replicas of every deployment the run created, as last set by Create or
@@ -340,9 +351,20 @@ func podReady(p *corev1.Pod) bool {
 	return false
 }
 
-func (r *Run) awaitHealthyPods(n int, timeout time.Duration) {
+// awaitHealthyPods waits for exactly n healthy pods and returns an error if the timeout passes first.
+func (r *Run) awaitHealthyPods(n int, timeout time.Duration) error {
 	GinkgoHelper()
-	Eventually(r.healthyPods).WithTimeout(timeout).WithPolling(2*time.Second).Should(Equal(n), "healthy %s pods", r.Scenario.Name)
+	deadline := time.Now().Add(timeout)
+	for {
+		h := r.healthyPods()
+		if h == n {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s with %d of %d %s pods healthy", timeout, h, n, r.Scenario.Name)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func (r *Run) disrupting() int {
@@ -375,7 +397,9 @@ func (r *Run) reserved() (cpu, memory float64) {
 	pods := &corev1.PodList{}
 	Expect(r.Provider.Client.List(r.ctx, pods)).To(Succeed())
 	for _, p := range pods.Items {
-		if !nodes.Has(p.Spec.NodeName) || p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		// DaemonSet requests are per-node overhead that depends on the cluster's add-ons, not on how Karpenter packed
+		// the workload, so they'd make utilization a property of the environment.
+		if !nodes.Has(p.Spec.NodeName) || p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || isDaemonSetPod(&p) {
 			continue
 		}
 		for _, c := range p.Spec.Containers {
@@ -493,4 +517,8 @@ func writeSummary(rep *Result, repro string) {
 		_, _ = f.WriteString(b.String())
 		_ = f.Close()
 	}
+}
+
+func isDaemonSetPod(p *corev1.Pod) bool {
+	return lo.ContainsBy(p.OwnerReferences, func(o metav1.OwnerReference) bool { return o.Kind == "DaemonSet" })
 }

@@ -40,7 +40,8 @@ func TestPerf(t *testing.T) {
 }
 
 var scenario = perf.Scenario{
-	Name:    "pods",
+	Name:     "pods",
+	Question: "How fast do pods become Ready?",
 	Vectors: map[perf.Vector]int{perf.VectorPods: 1000},
 	Phases:  []perf.PhaseSpec{{Name: "scaleOut"}, {Name: "consolidation"}},
 }
@@ -130,19 +131,39 @@ var _ = Describe("Inventory", func() {
 		_, err := perf.Inventory([]perf.Scenario{scenario}, provider(perf.Levels{"pods/scaleOut": {perf.HeapMB.Stable(95)}}, ev))
 		Expect(err).To(MatchError(ContainSubstring("no planted regression breaches")))
 	})
-	It("rejects a provider that enables a scenario it can't run", func() {
+	It("runs every scenario by default and skips one whose Requires the provider doesn't meet", func() {
 		needs := scenario
+		needs.Name = "needs"
 		needs.Requires = func(p *perf.Provider) error {
 			if len(p.Catalog.Families) < 2 {
 				return fmt.Errorf("needs two Catalog.Families")
 			}
 			return nil
 		}
-		p := provider(perf.Levels{"pods/scaleOut": {}}, ev)
-		Expect(perf.Validate(p, []perf.Scenario{needs})).To(MatchError(ContainSubstring("enables scenario pods, which it can't run: needs two Catalog.Families")))
+		all := []perf.Scenario{scenario, needs}
+		p := provider(perf.Levels{}, ev)
+		Expect(perf.Validate(p, all)).To(Succeed())
+		Expect(perf.EnabledScenarios(p, all)).To(Equal([]string{"pods"}))
 		p.Catalog.Families = []string{"c", "m"}
-		Expect(perf.Validate(p, []perf.Scenario{needs})).To(Succeed())
-		Expect(perf.Validate(provider(perf.Levels{}, ev), []perf.Scenario{needs})).To(Succeed(), "a scenario the provider doesn't enable isn't checked")
+		Expect(perf.EnabledScenarios(p, all)).To(Equal([]string{"pods", "needs"}))
+	})
+	It("lets a provider opt out of a scenario with a reason", func() {
+		p := provider(perf.Levels{}, ev)
+		p.Skip = map[string]string{"pods": "no spot capacity in this provider"}
+		Expect(perf.Validate(p, []perf.Scenario{scenario})).To(Succeed())
+		Expect(perf.EnabledScenarios(p, []perf.Scenario{scenario})).To(BeEmpty())
+		p.Skip = map[string]string{"pods": ""}
+		Expect(perf.Validate(p, []perf.Scenario{scenario})).To(MatchError(ContainSubstring(`skips "pods" without a reason`)))
+		p.Skip = map[string]string{"podz": "typo"}
+		Expect(perf.Validate(p, []perf.Scenario{scenario})).To(MatchError(ContainSubstring(`skips "podz", which no scenario declares`)))
+	})
+	It("requires every scenario to state its customer question and a declared group", func() {
+		noQ, orphan := scenario, scenario
+		noQ.Name, noQ.Question = "noQuestion", ""
+		orphan.Name, orphan.Group = "orphan", "missing"
+		err := perf.Validate(provider(perf.Levels{}, nil), []perf.Scenario{scenario, noQ, orphan})
+		Expect(err).To(MatchError(ContainSubstring("scenario noQuestion has no Question")))
+		Expect(err).To(MatchError(ContainSubstring(`scenario orphan is in group "missing"`)))
 	})
 	It("lists provider metrics with their alarm text", func() {
 		m := perf.Metric{Name: "api_calls", Kind: perf.KindResource, Unit: "calls", Upper: true, Measures: "API calls.", OnBreach: "Check caches."}
