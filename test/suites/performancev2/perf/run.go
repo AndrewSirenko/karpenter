@@ -84,6 +84,7 @@ type Run struct {
 	created   []client.Object
 	nodePools sets.Set[string]
 	sweep     bool
+	resized   bool
 	off       string
 	breaches  []string
 }
@@ -101,7 +102,7 @@ func newRun(ctx context.Context, p *Provider, s *Scenario, cell map[Vector]int) 
 			sizes[v] = n
 		}
 	}
-	return &Run{Provider: p, Scenario: s, Sizes: sizes, NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string](), sweep: cell != nil}
+	return &Run{Provider: p, Scenario: s, Sizes: sizes, NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string](), sweep: cell != nil, resized: p.resized(s, sizes)}
 }
 
 // Size is the run's size along a vector the scenario declares.
@@ -446,7 +447,10 @@ func (r *Run) finish(id string, gates []Gate, rep *Result) *Result {
 			GinkgoWriter.Printf("perf %s: sink failed: %v\n", id, err)
 		}
 	}
-	if !r.sweep {
+	if r.resized && !r.sweep {
+		GinkgoWriter.Printf("perf %s: sizes %s differ from the provider's calibrated ones, so its gates are reported, not enforced\n", id, sizesLabel(r.Sizes, "=", " "))
+	}
+	if !r.sweep && !r.resized {
 		assertGates(r, id, rep.Gates)
 	}
 	return rep

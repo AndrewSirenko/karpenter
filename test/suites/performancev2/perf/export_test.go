@@ -41,3 +41,5 @@ func (r ReplacementTracker) Stop(now time.Time) *Result {
 	r.t.stop(now, rep)
 	return rep
 }
+
+func Resized(p *Provider, s *Scenario, sizes map[Vector]int) bool { return p.resized(s, sizes) }

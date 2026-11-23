@@ -173,6 +173,13 @@ var _ = Describe("Inventory", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(out).To(ContainSubstring("| api_calls | resource | calls | above bound | API calls. | Check caches. |"))
 	})
+	It("measures, rather than gates, a run at sizes the levels weren't calibrated at", func() {
+		p := provider(perf.Levels{}, nil)
+		Expect(perf.Resized(p, &scenario, map[perf.Vector]int{perf.VectorPods: 1000})).To(BeFalse())
+		Expect(perf.Resized(p, &scenario, map[perf.Vector]int{perf.VectorPods: 5000})).To(BeTrue())
+		p.Sizes = map[string]map[perf.Vector]int{"pods": {perf.VectorPods: 300}}
+		Expect(perf.Resized(p, &scenario, map[perf.Vector]int{perf.VectorPods: 300})).To(BeFalse(), "the provider's own Sizes are what it calibrated at")
+	})
 	It("sizes one scenario from KARPENTER_PERF_SIZES", func() {
 		DeferCleanup(os.Unsetenv, "KARPENTER_PERF_SIZES")
 		Expect(os.Setenv("KARPENTER_PERF_SIZES", `{"pods":{"pods":7},"other":{"pods":9}}`)).To(Succeed())
