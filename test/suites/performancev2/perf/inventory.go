@@ -36,7 +36,8 @@ func (s *Scenario) phase(name string) (PhaseSpec, bool) {
 }
 
 // Validate checks that every level a provider sets names a declared scenario phase, that quantile bounds don't
-// decrease, and that a phase doesn't make two measures of the same thing both Stable.
+// decrease, that a phase doesn't make two measures of the same thing both Stable, and that the provider can run
+// every scenario it enables (Scenario.Requires).
 func Validate(p *Provider, scenarios []Scenario) error {
 	var errs []string
 	for id, gates := range p.Levels {
@@ -44,6 +45,23 @@ func Validate(p *Provider, scenarios []Scenario) error {
 			errs = append(errs, fmt.Sprintf("provider %s sets levels for %q, which no scenario declares", p.Name, id))
 		}
 		errs = append(errs, validateGates(p.Name, id, gates)...)
+	}
+	for name, why := range p.Skip {
+		if !lo.ContainsBy(scenarios, func(s Scenario) bool { return s.Name == name }) {
+			errs = append(errs, fmt.Sprintf("provider %s skips %q, which no scenario declares", p.Name, name))
+		}
+		if why == "" {
+			errs = append(errs, fmt.Sprintf("provider %s skips %q without a reason", p.Name, name))
+		}
+	}
+	for i := range scenarios {
+		s := &scenarios[i]
+		if s.Question == "" {
+			errs = append(errs, fmt.Sprintf("scenario %s has no Question", s.Name))
+		}
+		if s.Group != "" && s.Group != s.Name && !lo.ContainsBy(scenarios, func(o Scenario) bool { return o.Name == s.Group }) {
+			errs = append(errs, fmt.Sprintf("scenario %s is in group %q, which no scenario declares", s.Name, s.Group))
+		}
 	}
 	sort.Strings(errs)
 	if len(errs) > 0 {
@@ -89,13 +107,20 @@ func (r *Run) alarm(id string, breached []GateResult) string {
 	_, name, _ := strings.Cut(id, "/")
 	ph, _ := r.Scenario.phase(name)
 	var b strings.Builder
-	fmt.Fprintf(&b, "ALARM %s on %s (%s)\n%s\n%s\n", id, r.Provider.Name, sizesLabel(r.Sizes, "=", " "), r.Scenario.Summary, ph.Summary)
+	fmt.Fprintf(&b, "ALARM %s on %s (%s)\n%s\n%s\n%s\n", id, r.Provider.Name, sizesLabel(r.Sizes, "=", " "), r.Scenario.Question, r.Scenario.Summary, ph.Summary)
 	for _, g := range breached {
 		m, _ := r.Provider.metric(g.Metric)
 		fmt.Fprintf(&b, "\n%s\n  measures: %s\n  check: %s\n", g, m.Measures, m.OnBreach)
 	}
 	fmt.Fprintf(&b, "\nreproduce: %s\nthen diff the report JSON against the last green main run\n", r.repro())
 	return b.String()
+}
+
+func (r *Run) timeoutAlarm(id, why string) string {
+	_, name, _ := strings.Cut(id, "/")
+	ph, _ := r.Scenario.phase(name)
+	return fmt.Sprintf("TIMEOUT %s on %s (%s): %s\n%s\n%s\n%s\n\nThe phase report was written up to the timeout.\nreproduce: %s\n",
+		id, r.Provider.Name, sizesLabel(r.Sizes, "=", " "), why, r.Scenario.Question, r.Scenario.Summary, ph.Summary, r.repro())
 }
 
 func (p *Provider) sizes(s *Scenario) map[Vector]int {
@@ -149,6 +174,11 @@ func CheckEvidence(p *Provider) error {
 			case len(e.catches(g.Metric, g.Bound)) == 0:
 				errs = append(errs, fmt.Sprintf("%s %s is Stable but no planted regression breaches %g", id, g.Metric.Name, g.Bound))
 			}
+			for name, v := range e.Controls {
+				if ok && breaches(g.Metric, v, g.Bound) {
+					errs = append(errs, fmt.Sprintf("%s %s is Stable at %g, which negative control %s breaches (%g)", id, g.Metric.Name, g.Bound, name, v))
+				}
+			}
 		}
 	}
 	sort.Strings(errs)
@@ -184,8 +214,14 @@ func writeLevels(b *strings.Builder, p *Provider, scenarios []Scenario) {
 	if p.Summary != "" {
 		fmt.Fprintf(b, "%s\n\n", p.Summary)
 	}
-	if c := p.Calibration; c != nil && c.Source != "" {
-		fmt.Fprintf(b, "Calibration: %s, baseline %s, generated %s.\n\n", c.Source, c.Baseline, c.Generated.Format("2006-01-02"))
+	if prov := p.Calibration.Provenance(); len(prov) > 0 {
+		b.WriteString("Calibration:\n")
+		names := lo.Keys(prov)
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(b, "- %s: %s\n", name, prov[name])
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString("| phase | kind | metric | level | bound | n | median | CV | MDE50 | MDE80 | FPR | catches |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for i := range scenarios {
@@ -197,8 +233,8 @@ func writeLevels(b *strings.Builder, p *Provider, scenarios []Scenario) {
 			if off == "" && isOff(gates) {
 				off = "off"
 			}
-			if !p.enabled(s) || off != "" {
-				fmt.Fprintf(b, "| %s | - | - | %s | - | | | | | | | |\n", id, lo.Ternary(p.enabled(s), "off", "off (scenario)"))
+			if why := p.skipped(s); why != "" || off != "" {
+				fmt.Fprintf(b, "| %s | - | - | %s | - | | | | | | | |\n", id, lo.Ternary(why == "", "off", "skipped: "+why))
 				continue
 			}
 			byMetric := map[string]Gate{}
@@ -331,7 +367,11 @@ func writeScenarios(b *strings.Builder, providers []*Provider, scenarios []Scena
 		for _, p := range providers {
 			sizes = append(sizes, p.Name+": "+sizesLabel(p.sizes(s), "=", " "))
 		}
-		fmt.Fprintf(b, "- **%s** (%s): %s\n", s.Name, strings.Join(sizes, "; "), s.Summary)
+		group := ""
+		if s.Group != "" && s.Group != s.Name {
+			group = ", variant of " + s.Group
+		}
+		fmt.Fprintf(b, "- **%s** (%s%s): %s %s\n", s.Name, strings.Join(sizes, "; "), group, s.Question, s.Summary)
 		for _, ph := range s.Phases {
 			fmt.Fprintf(b, "  - `%s/%s`: %s\n", s.Name, ph.Name, ph.Summary)
 		}

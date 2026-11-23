@@ -58,9 +58,30 @@ type Provider struct {
 	// Sinks get every phase's Result after it's written, for example to push it to a metrics backend.
 	Sinks []func(context.Context, *Result) error
 	// ReproEnv names the provider's own environment variables, such as CLUSTER_NAME, to include in repro lines.
-	ReproEnv    []string
+	ReproEnv []string
+	// Catalog names the instance type dimensions NodePools can be restricted on, for scenarios that build diverse
+	// or family-restricted NodePools. Scenarios skip a dimension left empty, and a scenario that can't run without
+	// one says so in Scenario.Requires.
+	Catalog Catalog
+	// Skip opts the provider out of scenarios, by name, with the reason. Every other scenario runs, measured only
+	// where Levels sets nothing.
+	Skip        map[string]string
 	Levels      Levels
 	Calibration *Calibration
+}
+
+// Catalog describes a provider's instance types well enough to build NodePools that differ from each other.
+type Catalog struct {
+	// Zones are zone sets to rotate NodePools across.
+	Zones [][]string
+	// Arches are architectures to rotate NodePools across.
+	Arches []string
+	// SizeKey is a numeric instance size label, and SizeCeilings are values to rotate a "less than" requirement on.
+	SizeKey      string
+	SizeCeilings []string
+	// FamilyKey is an instance family label, and Families are values of it with different instance shapes.
+	FamilyKey string
+	Families  []string
 }
 
 // Shape is a deployment's per-pod requests.
@@ -162,6 +183,22 @@ func sizeOverrides() (all map[Vector]int, byScenario map[string]map[Vector]int, 
 		byScenario[k] = m
 	}
 	return all, byScenario, nil
+}
+
+// resized reports whether sizes differ from the ones the provider's levels were calibrated at: its Sizes, else the
+// scenario's defaults. Levels only hold at those sizes, so a resized run (KARPENTER_PERF_SIZES) is measured, like a
+// sweep cell, instead of failing on gates set for another size.
+func (p *Provider) resized(s *Scenario, sizes map[Vector]int) bool {
+	for v, def := range s.Vectors {
+		want := def
+		if n, ok := p.Sizes[s.Name][v]; ok {
+			want = n
+		}
+		if sizes[v] != want {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) size(scenario string, v Vector, def int) (int, error) {

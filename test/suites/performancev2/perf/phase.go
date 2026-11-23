@@ -17,12 +17,16 @@ limitations under the License.
 package perf
 
 import (
+	"context"
+	"fmt"
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -40,8 +44,9 @@ type Phase struct {
 	src          *source
 	prof         *profiler
 	start        time.Time
-	initialNodes int
+	initialNodes []string
 	skip         bool
+	timedOut     string
 }
 
 func (r *Run) StartPhase(name string) *Phase {
@@ -51,7 +56,7 @@ func (r *Run) StartPhase(name string) *Phase {
 		return &Phase{r: r, id: id, skip: true}
 	}
 	src := startSource(r.ctx, r.Provider)
-	return &Phase{r: r, id: id, gates: gates, src: src, prof: startProfiler(r.ctx, r.Provider, src.pod), start: time.Now(), initialNodes: len(r.nodes())}
+	return &Phase{r: r, id: id, gates: gates, src: src, prof: startProfiler(r.ctx, r.Provider, src.pod), start: time.Now(), initialNodes: nodeNames(r.nodes())}
 }
 
 // AwaitScaleOut waits for the pods to be healthy. Its total time runs from the first pod's creation to the last
@@ -61,7 +66,7 @@ func (p *Phase) AwaitScaleOut(pods int, timeout time.Duration) *Result {
 	if p.skip {
 		return nil
 	}
-	p.r.awaitHealthyPods(pods, p.r.timeout(timeout))
+	p.timeOut(p.r.awaitHealthyPods(pods, p.r.timeout(timeout)))
 	rep := &Result{Kind: "scale-out", Pods: pods, PodsNetChange: pods, Rounds: 1}
 	if first, last, ok := p.r.podSpan(p.start); ok {
 		rep.Total = last.Sub(first)
@@ -79,7 +84,7 @@ func (p *Phase) AwaitConsolidation(fromPods, toPods int, timeout time.Duration) 
 		return nil
 	}
 	timeout = p.r.timeout(timeout)
-	p.r.awaitHealthyPods(toPods, timeout)
+	p.timeOut(p.r.awaitHealthyPods(toPods, timeout))
 	start, last, rounds, inRound, prev := time.Now(), time.Now(), 0, false, len(p.r.nodes())
 	f := p.src.latest()
 	decisions, passesAtLast := disruptionDecisions(f), singleNodePasses(f)
@@ -97,7 +102,18 @@ func (p *Phase) AwaitConsolidation(fromPods, toPods int, timeout time.Duration) 
 		prev = n
 		time.Sleep(settlePoll)
 	}
+	if p.timedOut == "" && time.Since(start) >= timeout {
+		p.timedOut = fmt.Sprintf("consolidation didn't settle within %s (%d rounds, last change %s before the timeout)", timeout, rounds, time.Since(last).Round(time.Second))
+	}
 	return p.end(&Result{Kind: "consolidation", Pods: toPods, PodsNetChange: toPods - fromPods, Rounds: rounds}, last)
+}
+
+func nodeNames(nodes []corev1.Node) []string {
+	out := make([]string, 0, len(nodes))
+	for i := range nodes {
+		out = append(out, nodes[i].Name)
+	}
+	return out
 }
 
 func (p *Phase) end(rep *Result, lastActivity time.Time) *Result {
@@ -112,16 +128,77 @@ func (p *Phase) end(rep *Result, lastActivity time.Time) *Result {
 	rep.PodReady = p.r.podReadyQuantiles(p.start)
 	nodes := p.r.nodes()
 	rep.Resources, rep.LatencyStats, rep.Counters, rep.Gauges, rep.Commit = res, hists, counters, gauges, p.src.commit
-	rep.Nodes, rep.NodesNetChange = len(nodes), len(nodes)-p.initialNodes
+	rep.Nodes, rep.NodesNetChange = len(nodes), len(nodes)-len(p.initialNodes)
 	rep.ReservedCPUUtil, rep.ReservedMemoryUtil = p.r.reserved()
 	for k, v := range counters {
 		if strings.HasPrefix(k, "karpenter_pods_drained_total") {
 			rep.PodsDisrupted += v
 		}
 	}
+	rep.TimedOut = p.timedOut
 	rep = p.r.finish(p.id, p.gates, rep)
 	writeProfiles(rep, heap, cpu)
+	if p.timedOut != "" {
+		Fail(p.r.timeoutAlarm(p.id, p.timedOut))
+	}
 	return rep
+}
+
+// timeOut records the first wait that ran out of time. The phase still ends normally, so its report and profiles are
+// written as evidence, and then the spec fails.
+func (p *Phase) timeOut(err error) {
+	if err != nil && p.timedOut == "" {
+		p.timedOut = err.Error()
+	}
+}
+
+// AwaitReplacement measures a replacement: it watches nodes and the scenario's pods, calls trigger (for example a
+// NodePool template Patch that drifts every node), and ends the phase once every node that existed at its start is
+// gone except keep, none of the run's nodes is being disrupted, and the scenario has the given healthy pods. It
+// fails if a keep node is disrupted. Besides wall time it reports per-node replacement latency and unavailable
+// pod-seconds from watch events (see replacementTracker).
+func (p *Phase) AwaitReplacement(pods int, timeout time.Duration, trigger func(), keep ...string) *Result {
+	GinkgoHelper()
+	if p.skip {
+		return nil
+	}
+	kept := sets.New(keep...)
+	replaced := sets.New(p.initialNodes...).Difference(kept).UnsortedList()
+	Expect(replaced).ToNot(BeEmpty(), "replacement phase %s started with no nodes to replace", p.id)
+	timeout = p.r.timeout(timeout)
+	ctx, cancel := context.WithCancel(p.r.ctx)
+	defer cancel()
+	t := newReplacementTracker(replaced, pods)
+	p.r.watchReplacement(ctx, t)
+	trigger()
+	deadline, rounds, inRound := time.Now().Add(timeout), 0, false
+	for {
+		nodes := p.r.nodes()
+		disrupting, healthy := p.r.disrupting(), p.r.healthyPods()
+		switch {
+		case disrupting > 0 && !inRound:
+			rounds, inRound = rounds+1, true
+		case disrupting == 0:
+			inRound = false
+		}
+		for i := range nodes {
+			Expect(kept.Has(nodes[i].Name) && (nodes[i].DeletionTimestamp != nil || hasTaint(&nodes[i], v1.DisruptedTaintKey))).To(BeFalse(),
+				"node %s must survive the replacement but is being disrupted", nodes[i].Name)
+		}
+		if t.remaining() == 0 && disrupting == 0 && healthy == pods {
+			break
+		}
+		if time.Now().After(deadline) {
+			p.timedOut = fmt.Sprintf("replacement didn't finish within %s: %d of %d nodes left, %d disrupting, %d of %d pods healthy", timeout, t.remaining(), len(replaced), disrupting, healthy, pods)
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	gone := sets.New(nodeNames(p.r.nodes())...)
+	Expect(kept.Difference(gone).UnsortedList()).To(BeEmpty(), "nodes that had to survive the replacement")
+	rep := &Result{Kind: "replacement", Pods: pods, Rounds: rounds}
+	t.stop(time.Now(), rep)
+	return p.end(rep, time.Now())
 }
 
 // Restart deletes the controller pods and measures how long the new leader takes to report

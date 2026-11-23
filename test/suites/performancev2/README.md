@@ -16,7 +16,7 @@ To show the smoke test catches a regression, dispatch `perf-smoke` with `regress
 
 ## Audit it: `go run ./test/suites/performancev2/cmd/inventory`
 
-The inventory prints every phase's gated and measured metrics, grouped by kind (duration, outcome, resource). Each bound comes with the calibration evidence behind it. It's generated from the same values the suite runs, plus the checked-in `calibration/<provider>.json`, and it needs no cluster.
+The inventory prints every phase's gated and measured metrics, grouped by kind (duration, outcome, resource). Each bound comes with the calibration evidence behind it. It's generated from the same values the suite runs, plus the checked-in `calibration/<provider>/<scenario>.json`, and it needs no cluster.
 
 The command fails in two cases:
 - A level names an undeclared phase.
@@ -41,16 +41,15 @@ The command fails in two cases:
 Stable needs n >= 3, CV <= 20%, FPR <= 1% and at least one catch. An unlisted phase of an enabled scenario is measured. MDE50 and MDE80 are the smallest regressions one run catches half and 80% of the time, and FPR is the chance a baseline run breaches, assuming a normal spread with the baseline CV; with few baselines these are estimates.
 ```
 
-To recalibrate, put baselines in `base-*/` and regressions in `<patch>/` directories, then run:
+To recalibrate, put each run's reports in its own directory: `base-*` for baselines, and `<patch>` or `reg-<patch>` for a planted regression (directories may nest, for example `runs/<cluster>-<time>/base-1/`). Then run:
 
 ```sh
-go run ./test/suites/performancev2/cmd/calibrate -dir runs/ -source "cluster, controller size" > /tmp/kwok.json \
-  && mv /tmp/kwok.json test/suites/performancev2/calibration/kwok.json
-go run ./test/suites/performancev2/cmd/calibrate -dir runs/ -provider kwok-ci -source "GitHub kind runner" > /tmp/kwok-ci.json \
-  && mv /tmp/kwok-ci.json test/suites/performancev2/calibration/kwok-ci.json
+go run ./test/suites/performancev2/cmd/calibrate -dir runs/ -source "cluster, controller size" -out test/suites/performancev2/calibration/kwok
+go run ./test/suites/performancev2/cmd/calibrate -dir runs/ -provider kwok-ci -source "GitHub kind runner" -out test/suites/performancev2/calibration/kwok-ci
+go run ./test/suites/performancev2/cmd/calibrate -dir runs/ -levels   # the calibration rule's levels, as Go
 ```
 
-Write to a temp file first: the calibration is embedded, and redirecting straight into it empties it before `go run` compiles.
+Each scenario has its own `<scenario>.json` with its own source and baseline commit, and `-out` rewrites only the scenarios in `runs/`. Negative controls (`-controls`, by default `rv2013,rv2008`) are kept apart from planted regressions: they never count as a catch, a Stable bound they breach fails the inventory, and the rule counts them as baselines. The rule itself is in `perf/suggest.go`: bounds, whole-second pod latency, and when a gate may be Stable.
 
 How to read the evidence columns:
 - **MDE50 and MDE80:** the smallest regression a single run breaches the bound with 50% and 80% power. MDE50 is the median's distance from the bound.
@@ -75,18 +74,23 @@ All three model a run as normal around the baseline median with the baseline CV,
   - `Validate` rejects bounds that decrease across quantiles.
   - It also rejects a phase that gates both `total_time_seconds` and `pod_ready_seconds_max`, since they measure nearly the same thing.
 
-| Scenario | Vectors (default) | Phases | What it stresses |
-|---|---|---|---|
-| `pods` | pods=1000 | `scaleOut`, `consolidation` | provisioning throughput and disruption cost |
-| `nodepools` | nodepools=1000, pods=100 | `scheduling`, `startup` | per-NodePool cost: N-1 NodePools carry a tenant taint the pods don't tolerate |
-| `topology` | pods=1000 | `scaleOut` | hard constraints: hostname anti-affinity, zonal and hostname topology spread |
+Scenarios are grouped by the customer question they answer (`Scenario.Question`). A variant (`Scenario.Group`) is a full scenario sorted under its group; it can change anything.
+
+| Group | Customer question | Scenarios |
+|---|---|---|
+| pods | How fast do N pending pods become Ready, and how many nodes are left once demand drops? | `pods`, `podsWide` (30 shapes), `podsBalanced`, `podsBalancedChurn`, `podsBalancedHeterogeneous` (Balanced policy, score assertion) |
+| nodepools | What does each NodePool I add cost in scheduling latency, controller memory and startup time? | `nodepools` (one usable of N), `nodepoolsDiverse` (all different), `nodepoolsTargeted` (each pool gets a pod) |
+| topology | How fast do pods with hard spread and anti-affinity constraints become Ready? | `topology`, `topologyHostname` (hostname spread, consolidation) |
+| replacement | How long does rolling N nodes take, and how much capacity do I lose meanwhile? | `replacement` (drift every node), `replacementDoNotDisrupt` (protected pods survive consolidation and drift) |
 
 ## Writing a scenario
 
 ```go
+// Question: How fast do pods with hard spread and anti-affinity constraints become Ready?
 var Topology = perf.Scenario{
-	Name:    "topology",
-	Summary: "N pods with hostname anti-affinity and zonal/hostname topology spread.",
+	Name:     "topology",
+	Question: "How fast do pods with hard spread and anti-affinity constraints become Ready?",
+	Summary:  "N pods with hostname anti-affinity and zonal/hostname topology spread.",
 	Vectors: map[perf.Vector]int{perf.VectorPods: 1000},
 	Phases:  []perf.PhaseSpec{{Name: "scaleOut", Summary: "Topology groups and domain counting."}},
 	Run: func(r *perf.Run) {
@@ -95,15 +99,31 @@ var Topology = perf.Scenario{
 		...
 		p := r.StartPhase("scaleOut")
 		r.Create(r.NodeClass, r.NodePool, anti, zone, host)
-		p.AwaitScaleOut(n, 20*time.Minute)
+		p.AwaitScaleOut(r.Replicas(), 20*time.Minute)
 	},
 }
 ```
 
 How it works:
 - `Run` labels and cleans up everything it creates. A spec fails up front if an earlier one left labeled objects behind.
-- `StartPhase` fails on an undeclared phase, and on a phase the provider hasn't set levels for. An empty levels entry means measure only.
+- Every provider runs every scenario, measured only where it sets no levels. A provider opts out with `Provider.Skip` and a reason, and a scenario whose `Requires` it doesn't meet is skipped with that reason. `StartPhase` fails on an undeclared phase.
+- A wait that times out writes the phase report up to the timeout, then fails the spec.
 - The phase scrapes the leader's `/metrics` every 2 s through the API server proxy, and fails if the controller restarts mid-phase.
+
+What a scenario can use:
+- **Workload:** `r.Deployment` (names are lowercased, `Provider.Shapes` keys keep the scenario's own case), `r.Create` and `r.CreateParallel` for many objects, `r.Scale`, and `r.Patch` for any other change, such as drifting a NodePool template.
+- **Waiting:** `r.Replicas()` is the pod count every deployment the run created adds up to, so pass it to the Await methods rather than summing by hand. `AwaitScaleOut` and `AwaitConsolidation` end a phase. `AwaitReplacement` runs a trigger (a drifting Patch, say) and ends once every node from the phase start has been replaced, reporting per-node replacement latency and unavailable pod-seconds. `r.AwaitHealthyPods` waits inside a phase, for workloads that change several times.
+- **Checking outcomes:** `r.Nodes()`, `r.Pods()`, and on the returned `Result`, `Histograms`, `Histogram`, `Counter` and `Gauge`. An Await method returns nil for a skipped phase, so check that before asserting on the result.
+- **Provider specifics:** read the provider's instance type dimensions from `r.Provider.Catalog`, never the provider's own label keys or zones, so the scenario runs unchanged in other provider plugins. A scenario that can't run without a Catalog dimension says so in `Requires`, and providers without it skip the scenario with that reason (listed by `cmd/inventory`).
+- **Placement:** `ownPool` in `perf/scenarios/helpers.go` pins pods to the run's NodePool, so topology constraints don't count a real cluster's own nodes as domains.
+
+Adding a scenario to core:
+1. `perf/scenarios/<group>.go` for a new customer question, or `<group>_<variant>.go` for a variant, with the `Question` as the file's first comment. Add it to `scenarios.All` after its group.
+2. `levels_<scenario>.go` with its `kwok` and `kwok-ci` levels, plus one entry in `levels.go`'s `migrated` list. Start with empty entries (measure only).
+3. Run baselines and planted regressions, then `cmd/calibrate -out calibration/kwok` writes `calibration/kwok/<scenario>.json`, and `cmd/calibrate -levels` prints the levels to paste.
+4. Its name in the group table above.
+
+`make perf-verify` checks it: every scenario is enabled for both core providers, every level validates, and every Stable gate has evidence. perf-periodic picks the scenario up from `cmd/inventory -list kwok-ci`, with no workflow change.
 
 ## Levels (per provider)
 
@@ -113,6 +133,8 @@ Levels: perf.Levels{
 	"nodepools/startup": {perf.StartupSeconds.Stable(60)},
 },
 ```
+
+The core providers keep the levels of scenarios migrated from perfv1 in `levels_<scenario>.go`, one file per scenario with both providers' levels, so each scenario is reviewed and calibrated on its own. `levels.go` adds them to both providers.
 
 A provider that starts from another provider's levels declares only the differences:
 
@@ -199,6 +221,7 @@ A KWOK-based provider, such as the AWS provider's `./kwok`, writes a `suite_test
 | `Sinks` | callbacks that get every phase's `Result`, for example to push to a metrics backend |
 | `ReproEnv` | the provider's own env vars, such as `CLUSTER_NAME`, to include in repro lines |
 | `Levels`, `Calibration` | gates and the evidence behind them |
+| `Skip` | scenarios the provider doesn't run, each with the reason |
 
 A provider metric reads what `Capture` kept:
 

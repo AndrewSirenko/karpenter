@@ -48,12 +48,22 @@ const ScenarioLabel = "perf.karpenter.sh/scenario"
 // Scenario is a provider-agnostic workload along one vector. Summary and the phase summaries say what it
 // stresses and why; what each metric means comes from the Metric, so alarms and the inventory are generated.
 type Scenario struct {
-	Name    string
+	Name string
+	// Question is the customer question the scenario answers, in a customer's words. Validate requires it, and the
+	// inventory, alarms and bounds table lead with it.
+	Question string
+	// Group sorts a variant under the scenario it varies (for example "nodepools" for diverseNodePools), so the
+	// inventory and README list one row per customer question with its variants under it. Empty means the scenario
+	// is its own group. A variant is a full scenario: it can change anything.
+	Group   string
 	Summary string
 	Vectors map[Vector]int
 	Sweep   map[Vector][]int
 	Phases  []PhaseSpec
-	Run     func(*Run)
+	// Requires reports why a provider can't run the scenario, for example a Catalog dimension it needs. The scenario
+	// is then skipped for that provider with the reason, which cmd/inventory lists.
+	Requires func(*Provider) error
+	Run      func(*Run)
 }
 
 type PhaseSpec struct {
@@ -74,6 +84,7 @@ type Run struct {
 	created   []client.Object
 	nodePools sets.Set[string]
 	sweep     bool
+	resized   bool
 	off       string
 	breaches  []string
 }
@@ -91,7 +102,7 @@ func newRun(ctx context.Context, p *Provider, s *Scenario, cell map[Vector]int) 
 			sizes[v] = n
 		}
 	}
-	return &Run{Provider: p, Scenario: s, Sizes: sizes, NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string](), sweep: cell != nil}
+	return &Run{Provider: p, Scenario: s, Sizes: sizes, NodeClass: nc, NodePool: np, ctx: ctx, nodePools: sets.New[string](), sweep: cell != nil, resized: p.resized(s, sizes)}
 }
 
 // Size is the run's size along a vector the scenario declares.
@@ -108,7 +119,7 @@ func (r *Run) Deployment(name string, replicas int, cpu, memory string, opts ...
 		cpu, memory = lo.CoalesceOrEmpty(sh.CPU, cpu), lo.CoalesceOrEmpty(sh.Memory, memory)
 	}
 	opts = append(opts, test.WithLabels(map[string]string{ScenarioLabel: r.Scenario.Name}))
-	return test.Deployment(test.CreateDeploymentOptions(fmt.Sprintf("%s-%s", r.Scenario.Name, name), int32(replicas), cpu, memory, opts...)) //nolint:gosec // scenario sizes are far below MaxInt32
+	return test.Deployment(test.CreateDeploymentOptions(strings.ToLower(fmt.Sprintf("%s-%s", r.Scenario.Name, name)), int32(replicas), cpu, memory, opts...)) //nolint:gosec // scenario sizes are far below MaxInt32
 }
 
 func (r *Run) label(o client.Object) {
@@ -207,6 +218,43 @@ func (r *Run) Scale(replicas int, deps ...*appsv1.Deployment) {
 	}
 }
 
+// Patch applies mutate to o and merge-patches the change, for example to drift a NodePool by changing its template.
+func (r *Run) Patch(o client.Object, mutate func()) {
+	GinkgoHelper()
+	base := o.DeepCopyObject().(client.Object)
+	mutate()
+	patch := client.MergeFrom(base)
+	data, err := patch.Data(o)
+	Expect(err).ToNot(HaveOccurred())
+	Expect(string(data)).ToNot(Equal("{}"), "Patch of %s changed nothing", client.ObjectKeyFromObject(o))
+	Expect(r.Provider.Client.Patch(r.ctx, o, patch)).To(Succeed())
+}
+
+// AwaitHealthyPods waits for the scenario to have exactly n healthy pods without ending a phase, for scenarios that
+// change the workload several times inside one phase.
+func (r *Run) AwaitHealthyPods(n int, timeout time.Duration) {
+	GinkgoHelper()
+	Expect(r.awaitHealthyPods(n, r.timeout(timeout))).To(Succeed())
+}
+
+// Replicas is the scenario's pod count: the replicas of every deployment the run created, as last set by Create or
+// Scale. It's what the Await methods wait for, so scenarios don't sum pod counts by hand.
+func (r *Run) Replicas() int {
+	n := 0
+	for _, o := range r.created {
+		if d, ok := o.(*appsv1.Deployment); ok {
+			n += int(lo.FromPtr(d.Spec.Replicas))
+		}
+	}
+	return n
+}
+
+// Nodes returns the nodes in the run's NodePools.
+func (r *Run) Nodes() []corev1.Node { return r.nodes() }
+
+// Pods returns the scenario's pods.
+func (r *Run) Pods() []corev1.Pod { return r.scenarioPods() }
+
 func (r *Run) cleanup(ctx context.Context) {
 	c := r.Provider.Client
 	r.ctx = ctx
@@ -304,9 +352,20 @@ func podReady(p *corev1.Pod) bool {
 	return false
 }
 
-func (r *Run) awaitHealthyPods(n int, timeout time.Duration) {
+// awaitHealthyPods waits for exactly n healthy pods and returns an error if the timeout passes first.
+func (r *Run) awaitHealthyPods(n int, timeout time.Duration) error {
 	GinkgoHelper()
-	Eventually(r.healthyPods).WithTimeout(timeout).WithPolling(2*time.Second).Should(Equal(n), "healthy %s pods", r.Scenario.Name)
+	deadline := time.Now().Add(timeout)
+	for {
+		h := r.healthyPods()
+		if h == n {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s with %d of %d %s pods healthy", timeout, h, n, r.Scenario.Name)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func (r *Run) disrupting() int {
@@ -339,7 +398,9 @@ func (r *Run) reserved() (cpu, memory float64) {
 	pods := &corev1.PodList{}
 	Expect(r.Provider.Client.List(r.ctx, pods)).To(Succeed())
 	for _, p := range pods.Items {
-		if !nodes.Has(p.Spec.NodeName) || p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		// DaemonSet requests are per-node overhead that depends on the cluster's add-ons, not on how Karpenter packed
+		// the workload, so they'd make utilization a property of the environment.
+		if !nodes.Has(p.Spec.NodeName) || p.DeletionTimestamp != nil || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || isDaemonSetPod(&p) {
 			continue
 		}
 		for _, c := range p.Spec.Containers {
@@ -386,7 +447,10 @@ func (r *Run) finish(id string, gates []Gate, rep *Result) *Result {
 			GinkgoWriter.Printf("perf %s: sink failed: %v\n", id, err)
 		}
 	}
-	if !r.sweep {
+	if r.resized && !r.sweep {
+		GinkgoWriter.Printf("perf %s: sizes %s differ from the provider's calibrated ones, so its gates are reported, not enforced\n", id, sizesLabel(r.Sizes, "=", " "))
+	}
+	if !r.sweep && !r.resized {
 		assertGates(r, id, rep.Gates)
 	}
 	return rep
@@ -457,4 +521,8 @@ func writeSummary(rep *Result, repro string) {
 		_, _ = f.WriteString(b.String())
 		_ = f.Close()
 	}
+}
+
+func isDaemonSetPod(p *corev1.Pod) bool {
+	return lo.ContainsBy(p.OwnerReferences, func(o metav1.OwnerReference) bool { return o.Kind == "DaemonSet" })
 }

@@ -49,6 +49,13 @@ type Result struct {
 	StartupSeconds   float64       `json:"startup_seconds,omitempty"`
 	StartupCPUSecond float64       `json:"startup_cpu_seconds,omitempty"`
 	PodReady         Quantiles     `json:"pod_ready_seconds"`
+	// Replacement phases only: per replaced node, seconds from its first disrupted event to its delete event, and the
+	// scenario's missing healthy pods integrated over the phase (pod-seconds) and at their worst.
+	Replacement           Quantiles `json:"replacement_seconds,omitzero"`
+	UnavailablePodSeconds float64   `json:"unavailable_pod_seconds,omitempty"`
+	PeakUnavailablePods   int       `json:"peak_unavailable_pods,omitempty"`
+	// TimedOut says which wait ran out of time. The phase's other fields cover the time until then.
+	TimedOut string `json:"timed_out,omitempty"`
 
 	LatencyStats map[string]HistogramStats `json:"latency_stats,omitempty"`
 	Counters     map[string]uint64         `json:"counters,omitempty"`
@@ -63,6 +70,18 @@ type Quantiles struct {
 	P95   float64 `json:"p95"`
 	P99   float64 `json:"p99"`
 	Max   float64 `json:"max"`
+}
+
+// Histograms returns every non-empty series of a histogram family whose labels include the given ones, for scenario
+// checks that look at each series, such as one per consolidation decision.
+func (r *Result) Histograms(name string, labels map[string]string) []HistogramStats {
+	var out []HistogramStats
+	for _, h := range r.LatencyStats {
+		if h.MetricName == name && hasLabels(h.Labels, labels) && h.Count > 0 {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // Histogram, Counter and Gauge read what the phase captured, for provider Metrics, over the series of a family
