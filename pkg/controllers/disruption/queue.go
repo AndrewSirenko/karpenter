@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/awslabs/operatorpkg/option"
 	"github.com/awslabs/operatorpkg/serrors"
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/samber/lo"
@@ -105,12 +106,14 @@ type Queue struct {
 	clock               clock.Clock
 	provisioner         *provisioning.Provisioner
 	backoff             *nodepoolbackoff.State
+	observer            CommandObserver
 }
 
 // NewQueue creates a queue that will asynchronously orchestrate disruption commands
 func NewQueue(kubeClient client.Client, recorder events.Recorder, cluster *state.Cluster, clock clock.Clock,
-	provisioner *provisioning.Provisioner, backoff *nodepoolbackoff.State,
+	provisioner *provisioning.Provisioner, backoff *nodepoolbackoff.State, opts ...option.Function[QueueOptions],
 ) *Queue {
+	o := option.Resolve(opts...)
 	queue := &Queue{
 		// nolint:staticcheck
 		// We need to implement a deprecated interface since Command currently doesn't implement "comparable"
@@ -122,6 +125,7 @@ func NewQueue(kubeClient client.Client, recorder events.Recorder, cluster *state
 		clock:               clock,
 		provisioner:         provisioner,
 		backoff:             backoff,
+		observer:            o.observer,
 	}
 	return queue
 }
@@ -187,6 +191,7 @@ func (q *Queue) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reconci
 		q.observeDriftOutcome(ctx, cmd, cmd.Succeeded)
 	}
 	q.CompleteCommand(cmd)
+	q.observeCommand(ctx, cmd, CommandCompleted)
 	return reconcile.Result{}, nil
 }
 
@@ -397,9 +402,14 @@ func (q *Queue) createReplacementNodeClaims(ctx context.Context, cmd *Command) e
 // 1. Taint candidate nodes
 // 2. Spin up replacement nodes
 // 3. Add Command to the queue to wait to delete the candidates.
-//
-//nolint:gocyclo
 func (q *Queue) StartCommand(ctx context.Context, cmd *Command) error {
+	err := q.startCommand(ctx, cmd)
+	q.observeCommand(ctx, cmd, lo.Ternary(err == nil, CommandStarted, CommandStartFailed))
+	return err
+}
+
+//nolint:gocyclo
+func (q *Queue) startCommand(ctx context.Context, cmd *Command) error {
 	queueOwnsStaticReservation := true
 	defer func() {
 		if !queueOwnsStaticReservation {

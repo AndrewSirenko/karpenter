@@ -78,6 +78,21 @@ import (
 type ControllerOptions struct {
 	registrationHooks   []cloudprovider.NodeLifecycleHook
 	enableVPAPrediction bool
+	decisionObserver    DecisionObserver
+}
+
+// DecisionObserver is told about provisioning and disruption decisions, for example to record them outside the cluster.
+type DecisionObserver interface {
+	provisioning.SchedulingObserver
+	disruption.CommandObserver
+}
+
+// WithDecisionObserver registers an observer of provisioning solves and disruption commands. Its methods are called
+// inline, so they must not block.
+func WithDecisionObserver(observer DecisionObserver) option.Function[ControllerOptions] {
+	return func(o *ControllerOptions) {
+		o.decisionObserver = observer
+	}
 }
 
 // WithVPAPrediction enables the VPA prediction controller as the prediction source.
@@ -119,10 +134,16 @@ func NewControllers(
 	o := option.Resolve(opts...)
 	deviceAllocationController := deviceallocation.NewController(kubeClient)
 	virtualPodCache := virtualpods.NewVirtualPodCache(kubeClient)
-	p := provisioning.NewProvisioner(kubeClient, recorder, cloudProvider, cluster, clock, deviceAllocationController, virtualPodCache, predictionStore)
+	var provisionerOpts []option.Function[provisioning.ProvisionerOptions]
+	var queueOpts []option.Function[disruption.QueueOptions]
+	if o.decisionObserver != nil {
+		provisionerOpts = append(provisionerOpts, provisioning.WithSchedulingObserver(o.decisionObserver))
+		queueOpts = append(queueOpts, disruption.WithCommandObserver(o.decisionObserver))
+	}
+	p := provisioning.NewProvisioner(kubeClient, recorder, cloudProvider, cluster, clock, deviceAllocationController, virtualPodCache, predictionStore, provisionerOpts...)
 	evictionQueue := terminator.NewQueue(clock, kubeClient, recorder)
 	driftBackoff := nodepoolbackoff.NewState(clock)
-	disruptionQueue := disruption.NewQueue(kubeClient, recorder, cluster, clock, p, driftBackoff)
+	disruptionQueue := disruption.NewQueue(kubeClient, recorder, cluster, clock, p, driftBackoff, queueOpts...)
 	npState := nodepoolhealth.NewState()
 	clusterCost := cost.NewClusterCost(ctx, cloudProvider, kubeClient)
 	controllers := []controller.Controller{

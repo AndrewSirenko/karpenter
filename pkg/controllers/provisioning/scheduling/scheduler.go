@@ -318,6 +318,8 @@ func (e DRAError) Unwrap() error {
 
 // Results contains the results of the scheduling operation
 type Results struct {
+	// ID is the scheduling ID of the solve that produced these results
+	ID                         types.UID
 	NewNodeClaims              []*NodeClaim
 	ExistingNodes              []*ExistingNode
 	PodErrors                  map[*corev1.Pod]error
@@ -541,6 +543,7 @@ func (s *Scheduler) Solve(ctx context.Context, pods []*corev1.Pod) (Results, err
 	}
 
 	results := Results{
+		ID:            s.uuid,
 		NewNodeClaims: s.newNodeClaims,
 		ExistingNodes: s.existingNodes,
 		PodErrors:     podErrors,

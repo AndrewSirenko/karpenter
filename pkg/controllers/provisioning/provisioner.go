@@ -94,13 +94,16 @@ type Provisioner struct {
 	deviceAllocationController *deviceallocation.Controller
 	virtualPodCache            *virtualpods.Cache
 	predictionStore            *prediction.Store
+	observer                   SchedulingObserver
 }
 
 func NewProvisioner(kubeClient client.Client, recorder events.Recorder,
 	cloudProvider cloudprovider.CloudProvider, cluster *state.Cluster,
 	clock clock.Clock, deviceAllocationController *deviceallocation.Controller, virtualPodCache *virtualpods.Cache,
 	predictionStore *prediction.Store,
+	opts ...option.Function[ProvisionerOptions],
 ) *Provisioner {
+	o := option.Resolve(opts...)
 	p := &Provisioner{
 		batcher:                    NewBatcher[types.UID](clock),
 		cloudProvider:              cloudProvider,
@@ -113,6 +116,7 @@ func NewProvisioner(kubeClient client.Client, recorder events.Recorder,
 		deviceAllocationController: deviceAllocationController,
 		virtualPodCache:            virtualPodCache,
 		predictionStore:            predictionStore,
+		observer:                   o.observer,
 	}
 	return p
 }
@@ -177,9 +181,12 @@ func (p *Provisioner) Reconcile(ctx context.Context) (result reconciler.Result, 
 		p.cluster.UpdateBufferPodCounts(bufferPodCountsFromResults(results))
 	}
 	if len(results.NewNodeClaims) == 0 {
+		p.observeScheduled(ctx, results, nil)
 		return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
 	}
-	if _, err = p.CreateNodeClaims(ctx, results.NewNodeClaims, WithReason(metrics.ProvisionedReason), RecordPodNomination); err != nil {
+	nodeClaimNames, err := p.CreateNodeClaims(ctx, results.NewNodeClaims, WithReason(metrics.ProvisionedReason), RecordPodNomination)
+	p.observeScheduled(ctx, results, nodeClaimNames)
+	if err != nil {
 		return reconciler.Result{}, err
 	}
 	return reconciler.Result{RequeueAfter: singleton.RequeueImmediately}, nil
