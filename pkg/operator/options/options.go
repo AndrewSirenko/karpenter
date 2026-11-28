@@ -85,6 +85,9 @@ type FeatureGate struct {
 	Stage docs.Stage
 	// Help is human-readable documentation for the gate: what enabling it does.
 	Help string
+	// LockToDefault rejects setting the gate to anything but Default. A GA gate is locked one release after it
+	// graduates, then removed.
+	LockToDefault bool
 }
 
 var (
@@ -98,7 +101,7 @@ var (
 	ReservedCapacityFeatureGate = FeatureGate{
 		Name:    "ReservedCapacity",
 		Default: true,
-		Stage:   docs.Beta,
+		Stage:   docs.GA,
 		Help: "Enables capacity reservations. Karpenter can launch nodes into reserved capacity, and prefers it " +
 			"over on-demand and spot capacity.",
 	}
@@ -335,6 +338,11 @@ func ParseFeatureGates(gateStr string) (FeatureGates, error) {
 	} {
 		if val, ok := gateMap[name]; ok {
 			*gate = val
+		}
+	}
+	for _, g := range KarpenterFeatureGates {
+		if val, ok := gateMap[g.Name]; ok && g.LockToDefault && val != g.Default {
+			return gates, fmt.Errorf("feature gate %s is GA and locked to %t", g.Name, g.Default)
 		}
 	}
 

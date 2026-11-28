@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/awslabs/operatorpkg/docs"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/samber/lo"
@@ -571,6 +572,36 @@ podTopologySpread:
       whenUnsatisfiable: Sometimes
 `)
 			Expect(err).To(HaveOccurred())
+		})
+	})
+	Context("GA feature gates", func() {
+		AfterEach(func() {
+			options.ReservedCapacityFeatureGate.LockToDefault = false
+		})
+		It("should mark ReservedCapacity as GA and enabled by default", func() {
+			Expect(options.ReservedCapacityFeatureGate.Stage).To(Equal(docs.GA))
+			Expect(options.ReservedCapacityFeatureGate.Default).To(BeTrue())
+		})
+		It("should still allow disabling a GA gate that isn't locked yet", func() {
+			gates, err := options.ParseFeatureGates("ReservedCapacity=false")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(gates.ReservedCapacity).To(BeFalse())
+		})
+		It("should reject disabling a gate locked to its default", func() {
+			options.ReservedCapacityFeatureGate.LockToDefault = true
+			lockedGates := lo.Map(options.KarpenterFeatureGates, func(g options.FeatureGate, _ int) options.FeatureGate {
+				if g.Name == options.ReservedCapacityFeatureGate.Name {
+					return options.ReservedCapacityFeatureGate
+				}
+				return g
+			})
+			previous := options.KarpenterFeatureGates
+			options.KarpenterFeatureGates = lockedGates
+			DeferCleanup(func() { options.KarpenterFeatureGates = previous })
+			_, err := options.ParseFeatureGates("ReservedCapacity=false")
+			Expect(err).To(MatchError(ContainSubstring("locked")))
+			_, err = options.ParseFeatureGates("ReservedCapacity=true")
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
